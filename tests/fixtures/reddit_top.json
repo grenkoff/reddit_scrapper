@@ -1,0 +1,119 @@
+{
+  "data": {
+    "children": [
+      {
+        "data": {
+          "id": "abc123",
+          "subreddit": "programming",
+          "title": "Cool image post",
+          "author": "user1",
+          "permalink": "/r/programming/comments/abc123/cool_image_post/",
+          "url": "https://i.redd.it/test.jpg",
+          "selftext": "",
+          "score": 5000,
+          "num_comments": 200,
+          "is_video": false,
+          "over_18": false,
+          "is_gallery": false,
+          "post_hint": "image"
+        }
+      },
+      {
+        "data": {
+          "id": "def456",
+          "subreddit": "videos",
+          "title": "Cool video post",
+          "author": "user2",
+          "permalink": "/r/videos/comments/def456/cool_video_post/",
+          "url": "https://v.redd.it/def456",
+          "selftext": "",
+          "score": 3000,
+          "num_comments": 100,
+          "is_video": true,
+          "over_18": false,
+          "is_gallery": false,
+          "media": {
+            "reddit_video": {
+              "fallback_url": "https://v.redd.it/def456/DASH_720.mp4"
+            }
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "ghi789",
+          "subreddit": "worldnews",
+          "title": "Text post with selftext",
+          "author": "user3",
+          "permalink": "/r/worldnews/comments/ghi789/text_post/",
+          "url": "https://www.reddit.com/r/worldnews/comments/ghi789/text_post/",
+          "selftext": "This is the body of the text post.",
+          "score": 1000,
+          "num_comments": 50,
+          "is_video": false,
+          "over_18": false,
+          "is_gallery": false
+        }
+      },
+      {
+        "data": {
+          "id": "jkl012",
+          "subreddit": "pics",
+          "title": "NSFW post",
+          "author": "user4",
+          "permalink": "/r/pics/comments/jkl012/nsfw_post/",
+          "url": "https://i.redd.it/nsfw.jpg",
+          "selftext": "",
+          "score": 2000,
+          "num_comments": 80,
+          "is_video": false,
+          "over_18": true,
+          "is_gallery": false,
+          "post_hint": "image"
+        }
+      },
+      {
+        "data": {
+          "id": "mno345",
+          "subreddit": "pics",
+          "title": "Gallery post",
+          "author": "user5",
+          "permalink": "/r/pics/comments/mno345/gallery_post/",
+          "url": "https://www.reddit.com/gallery/mno345",
+          "selftext": "",
+          "score": 4000,
+          "num_comments": 150,
+          "is_video": false,
+          "over_18": false,
+          "is_gallery": true,
+          "gallery_data": {
+            "items": [
+              {"media_id": "img1"},
+              {"media_id": "img2"}
+            ]
+          },
+          "media_metadata": {
+            "img1": {"s": {"u": "https://i.redd.it/img1.jpg"}},
+            "img2": {"s": {"u": "https://i.redd.it/img2.jpg"}}
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "pqr678",
+          "subreddit": "technology",
+          "title": "External link post",
+          "author": "user6",
+          "permalink": "/r/technology/comments/pqr678/external_link/",
+          "url": "https://example.com/article",
+          "selftext": "",
+          "score": 2500,
+          "num_comments": 90,
+          "is_video": false,
+          "over_18": false,
+          "is_gallery": false
+        }
+      }
+    ]
+  }
+}
