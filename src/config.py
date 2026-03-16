@@ -1,5 +1,18 @@
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+
+def _load_env_file(path: str = ".env") -> None:
+    env_file = Path(path)
+    if not env_file.exists():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
 
 
 @dataclass
@@ -14,6 +27,7 @@ class Config:
 
 
 def load_config() -> Config:
+    _load_env_file()
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
