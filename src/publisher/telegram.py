@@ -76,8 +76,9 @@ def _build_footer(post: dict, config: Config) -> str:
         domain = urlparse(post["content_url"]).netloc
         if domain.startswith("www."):
             domain = domain[4:]
-        external_link = f'<a href="{post["content_url"]}">{domain}</a>'
-        reddit_link = f"{reddit_link} : : {external_link}"
+        if domain and "reddit.com" not in domain:
+            external_link = f'<a href="{post["content_url"]}">{domain}</a>'
+            reddit_link = f"{reddit_link} : : {external_link}"
 
     parts = [reddit_link]
     if config.telegram_channel_link:
