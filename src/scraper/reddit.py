@@ -1,3 +1,4 @@
+import html as _html
 import logging
 from datetime import UTC, datetime
 
@@ -15,6 +16,8 @@ def _detect_post_type(data: dict) -> str:
         return "gallery"
     if data.get("is_video"):
         return "video"
+    if data.get("post_hint") == "animated_image":
+        return "gif"
     url = data.get("url", "")
     if data.get("post_hint") == "image" or url.startswith("https://i.redd.it"):
         return "image"
@@ -40,6 +43,12 @@ def _extract_media_urls(data: dict) -> list[str] | None:
 
 def _parse_post(data: dict) -> dict:
     post_type = _detect_post_type(data)
+    raw_preview = (
+        data.get("preview", {})
+            .get("images", [{}])[0]
+            .get("source", {})
+            .get("url", "")
+    )
     return {
         "reddit_id": f"t3_{data['id']}",
         "subreddit": data["subreddit"],
@@ -54,14 +63,27 @@ def _parse_post(data: dict) -> dict:
         "is_nsfw": data.get("over_18", False),
         "media_urls": _extract_media_urls(data),
         "created_utc": datetime.fromtimestamp(data.get("created_utc", 0), tz=UTC).isoformat(),
+        "preview_url": _html.unescape(raw_preview) if raw_preview else None,
+        "video_url": (
+            (data.get("media") or {}).get("reddit_video", {}).get("fallback_url")
+            or (data.get("secure_media") or {}).get("reddit_video", {}).get("fallback_url")
+        ) or None,
+        "hls_url": (
+            (data.get("media") or {}).get("reddit_video", {}).get("hls_url")
+            or (data.get("secure_media") or {}).get("reddit_video", {}).get("hls_url")
+        ) or None,
     }
 
 
 async def fetch_top_posts(config: Config) -> list[dict]:
     params = {"limit": config.posts_limit, "raw_json": 1, "sort": "top"}
-    headers = {"User-Agent": config.reddit_user_agent}
+    headers = {
+        "User-Agent": config.reddit_user_agent,
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         response = await client.get(REDDIT_URL, params=params, headers=headers)
         response.raise_for_status()
 

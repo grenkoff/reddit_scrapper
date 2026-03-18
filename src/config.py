@@ -24,6 +24,7 @@ class Config:
     posts_limit: int = 50
     skip_nsfw: bool = True
     pause_between_posts: float = 3.0  # seconds
+    telegram_channel_link: str = ""
 
 
 def load_config() -> Config:
@@ -44,4 +45,5 @@ def load_config() -> Config:
         posts_limit=int(os.getenv("POSTS_LIMIT", "50")),
         skip_nsfw=os.getenv("SKIP_NSFW", "true").lower() == "true",
         pause_between_posts=float(os.getenv("PAUSE_BETWEEN_POSTS", "3.0")),
+        telegram_channel_link=os.getenv("TELEGRAM_CHANNEL_LINK", ""),
     )

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from src.config import load_config
 from src.db import get_unpublished_posts, init_db, insert_post, is_post_exists, log_scrape, mark_as_published
 from src.publisher.telegram import publish_post
-from src.scraper.media import cleanup, download_image, download_video
+from src.scraper.media import cleanup, download_gif, download_image, download_video, download_video_direct
 from src.scraper.reddit import fetch_top_posts
 
 logging.basicConfig(
@@ -15,6 +15,14 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+_VIDEO_DOMAINS = {"youtube.com", "youtu.be", "vimeo.com", "twitter.com", "x.com", "tiktok.com", "streamable.com"}
+
+
+def _is_video_url(url: str) -> bool:
+    from urllib.parse import urlparse
+    netloc = urlparse(url).netloc.lower()
+    return any(d in netloc for d in _VIDEO_DOMAINS)
 
 
 async def scrape_and_publish(config) -> None:
@@ -41,23 +49,31 @@ async def scrape_and_publish(config) -> None:
 
             if post["post_type"] == "image" and post.get("content_url"):
                 media_path = await download_image(post["content_url"])
-            elif post["post_type"] == "video" and post.get("content_url"):
-                media_path = await asyncio.get_event_loop().run_in_executor(None, download_video, post["content_url"])
+            elif post["post_type"] == "gif" and post.get("content_url"):
+                media_path = await download_gif(post["content_url"])
+            elif post["post_type"] == "video" and post.get("video_url"):
+                media_path = await download_video_direct(post["video_url"], hls_url=post.get("hls_url"))
             elif post["post_type"] == "gallery" and post.get("media_urls"):
                 paths = [await download_image(url) for url in post["media_urls"]]
                 media_paths = [p for p in paths if p is not None] or None
+            elif post["post_type"] == "link" and post.get("content_url") and _is_video_url(post["content_url"]):
+                media_path = await asyncio.get_event_loop().run_in_executor(None, download_video, post["content_url"])
 
-            msg_id = await publish_post(config, post, media_path=media_path, media_paths=media_paths)
+            try:
+                msg_id = await publish_post(config, post, media_path=media_path, media_paths=media_paths)
+            except Exception as e:
+                logger.warning("Failed to publish post %s: %s", post["reddit_id"], e)
+                msg_id = None
+
+            if msg_id:
+                await mark_as_published(post["reddit_id"], msg_id)
+                posts_published += 1
 
             if media_path:
                 cleanup(media_path)
             if media_paths:
                 for p in media_paths:
                     cleanup(p)
-
-            if msg_id:
-                await mark_as_published(post["reddit_id"], msg_id)
-                posts_published += 1
 
     except Exception as e:
         error = str(e)

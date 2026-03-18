@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 from datetime import UTC, datetime
@@ -47,6 +48,15 @@ async def init_db() -> None:
             )
         """)
         await db.commit()
+        with contextlib.suppress(Exception):
+            await db.execute("ALTER TABLE posts ADD COLUMN preview_url TEXT")
+            await db.commit()
+        with contextlib.suppress(Exception):
+            await db.execute("ALTER TABLE posts ADD COLUMN video_url TEXT")
+            await db.commit()
+        with contextlib.suppress(Exception):
+            await db.execute("ALTER TABLE posts ADD COLUMN hls_url TEXT")
+            await db.commit()
     logger.info("Database initialized")
 
 
@@ -62,8 +72,8 @@ async def insert_post(post: dict) -> None:
             """
             INSERT OR IGNORE INTO posts
                 (reddit_id, subreddit, title, author, url, content_url, selftext,
-                 score, num_comments, post_type, is_nsfw, media_urls, created_utc, scraped_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 score, num_comments, post_type, is_nsfw, media_urls, created_utc, scraped_at, preview_url, video_url, hls_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 post["reddit_id"],
@@ -80,6 +90,9 @@ async def insert_post(post: dict) -> None:
                 json.dumps(post["media_urls"]) if post.get("media_urls") else None,
                 post["created_utc"],
                 datetime.now(UTC).isoformat(),
+                post.get("preview_url"),
+                post.get("video_url"),
+                post.get("hls_url"),
             ),
         )
         await db.commit()
