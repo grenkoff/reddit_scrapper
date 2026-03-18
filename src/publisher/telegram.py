@@ -265,7 +265,13 @@ async def _publish_gallery(
     config: Config,
     post: dict,
     media_paths: list[Path],
+    caption: str,
 ) -> int | None:
+    # If all images fit in one group and caption fits — send together
+    if len(media_paths) <= MEDIA_GROUP_MAX and len(caption) <= MAX_CAPTION_LEN:
+        return await _send_media_group(client, config, media_paths, caption=caption)
+
+    # Otherwise send all groups without caption, then send text separately
     groups = [media_paths[i:i + MEDIA_GROUP_MAX] for i in range(0, len(media_paths), MEDIA_GROUP_MAX)]
     for group in groups:
         await _send_media_group(client, config, group, caption=None)
@@ -315,7 +321,7 @@ async def publish_post(
         elif post_type == "gif" and media_path:
             msg_id = await _send_animation(client, config, caption, media_path)
         elif post_type == "gallery" and media_paths:
-            msg_id = await _publish_gallery(client, config, post, media_paths)
+            msg_id = await _publish_gallery(client, config, post, media_paths, caption)
         elif post_type == "text":
             msg_id = await _publish_text_messages(client, config, post)
         elif post_type == "link":
