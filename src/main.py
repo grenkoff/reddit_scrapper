@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from src.config import load_config
 from src.db import get_unpublished_posts, init_db, insert_post, is_post_exists, log_scrape, mark_as_published
 from src.publisher.telegram import publish_post
-from src.scraper.media import cleanup, download_gif, download_image, download_video, download_video_direct
+from src.scraper.media import cleanup, compress_video, download_gif, download_image, download_video, download_video_direct
 from src.scraper.reddit import fetch_top_posts
 
 logging.basicConfig(
@@ -53,11 +53,15 @@ async def scrape_and_publish(config) -> None:
                 media_path = await download_gif(post["content_url"])
             elif post["post_type"] == "video" and post.get("video_url"):
                 media_path = await download_video_direct(post["video_url"], hls_url=post.get("hls_url"))
+                if media_path:
+                    media_path = await asyncio.get_event_loop().run_in_executor(None, compress_video, media_path)
             elif post["post_type"] == "gallery" and post.get("media_urls"):
                 paths = [await download_image(url) for url in post["media_urls"]]
                 media_paths = [p for p in paths if p is not None] or None
             elif post["post_type"] == "link" and post.get("content_url") and _is_video_url(post["content_url"]):
                 media_path = await asyncio.get_event_loop().run_in_executor(None, download_video, post["content_url"])
+                if media_path:
+                    media_path = await asyncio.get_event_loop().run_in_executor(None, compress_video, media_path)
 
             try:
                 msg_id = await publish_post(config, post, media_path=media_path, media_paths=media_paths)

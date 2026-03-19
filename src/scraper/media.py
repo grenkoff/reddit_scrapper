@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import re
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -134,6 +136,58 @@ def download_video(url: str) -> Path | None:
     except Exception:
         logger.warning("Failed to download video: %s", url, exc_info=True)
         return None
+
+
+def _get_duration(ffmpeg_bin: str, path: Path) -> float | None:
+    """Parse video duration in seconds from ffmpeg stderr."""
+    result = subprocess.run(
+        [ffmpeg_bin, "-i", str(path)],
+        capture_output=True, text=True,
+    )
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", result.stderr)
+    if m:
+        h, mn, s = int(m.group(1)), int(m.group(2)), float(m.group(3))
+        return h * 3600 + mn * 60 + s
+    return None
+
+
+def compress_video(path: Path, max_mb: int = 49) -> Path:
+    """Add faststart flag; re-encode and shrink if file exceeds max_mb."""
+    ffmpeg = _get_ffmpeg()
+    if not ffmpeg:
+        return path
+
+    try:
+        TMP_DIR.mkdir(exist_ok=True)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4", dir=TMP_DIR) as out_f:
+            out_path = Path(out_f.name)
+
+        size_mb = path.stat().st_size / (1024 * 1024)
+
+        if size_mb <= max_mb:
+            cmd = [ffmpeg, "-y", "-i", str(path),
+                   "-c", "copy", "-movflags", "+faststart", str(out_path)]
+        else:
+            duration = _get_duration(ffmpeg, path)
+            if duration and duration > 0:
+                audio_kbps = 128
+                target_kbps = max(int(max_mb * 8 * 1024 / duration) - audio_kbps, 200)
+            else:
+                target_kbps = 800
+            cmd = [ffmpeg, "-y", "-i", str(path),
+                   "-c:v", "libx264", "-b:v", f"{target_kbps}k",
+                   "-maxrate", f"{target_kbps}k", "-bufsize", f"{target_kbps * 2}k",
+                   "-preset", "fast", "-movflags", "+faststart",
+                   "-c:a", "aac", "-b:a", "128k",
+                   str(out_path)]
+
+        subprocess.run(cmd, capture_output=True, check=True)
+        path.unlink(missing_ok=True)
+        logger.info("Video compressed: %.1f MB → %.1f MB", size_mb, out_path.stat().st_size / (1024 * 1024))
+        return out_path
+    except Exception:
+        logger.warning("Video compression failed, using original: %s", path, exc_info=True)
+        return path
 
 
 def cleanup(path: Path) -> None:
