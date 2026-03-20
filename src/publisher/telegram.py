@@ -248,16 +248,41 @@ async def _publish_text_messages(
     config: Config,
     post: dict,
 ) -> int | None:
-    title = f'<b>{_html.escape(post["title"])}</b>'
-    selftext = _md_to_telegram_html(post.get("selftext") or "")
+    title_html = f'<b>{_html.escape(post["title"])}</b>'
+    selftext_raw = post.get("selftext") or ""
     footer = _build_footer(post, config)
 
-    body = f"{title}\n\n{selftext}" if selftext else title
-    chunks = _chunk_text_evenly(body, footer)
+    # Try single message first
+    selftext_html = _md_to_telegram_html(selftext_raw)
+    body = f"{title_html}\n\n{selftext_html}" if selftext_html else title_html
+    if len(f"{body}\n\n{footer}") <= MAX_MESSAGE_LEN:
+        return await _send_message(client, config, f"{body}\n\n{footer}")
+
+    # Too long: split RAW text first, then convert each chunk individually.
+    # Splitting already-converted HTML would cut tags in half → invalid HTML.
+    raw_chunk_size = 3000
+    raw_chunks: list[str] = []
+    remaining = selftext_raw
+    while remaining:
+        if len(remaining) <= raw_chunk_size:
+            raw_chunks.append(remaining)
+            break
+        split = remaining.rfind(" ", 0, raw_chunk_size)
+        if split == -1:
+            split = raw_chunk_size
+        raw_chunks.append(remaining[:split])
+        remaining = remaining[split:].lstrip()
+
+    if not raw_chunks:
+        raw_chunks = [""]
 
     msg_id = None
-    for chunk in chunks:
-        msg_id = await _send_message(client, config, chunk)
+    for i, raw_chunk in enumerate(raw_chunks):
+        chunk_html = _md_to_telegram_html(raw_chunk)
+        text = f"{title_html}\n\n{chunk_html}" if i == 0 else chunk_html
+        if i == len(raw_chunks) - 1:
+            text += f"\n\n{footer}"
+        msg_id = await _send_message(client, config, text)
     return msg_id
 
 
