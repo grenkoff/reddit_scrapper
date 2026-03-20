@@ -98,10 +98,13 @@ async def insert_post(post: dict) -> None:
         await db.commit()
 
 
-async def get_unpublished_posts() -> list[dict]:
+async def get_unpublished_posts(limit: int | None = None) -> list[dict]:
+    query = "SELECT * FROM posts WHERE published_to_tg = 0 ORDER BY score DESC"
+    if limit:
+        query += f" LIMIT {limit}"
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM posts WHERE published_to_tg = 0 ORDER BY score DESC") as cursor:
+        async with db.execute(query) as cursor:
             rows = await cursor.fetchall()
     posts = [dict(row) for row in rows]
     for post in posts:
