@@ -361,5 +361,4 @@ async def publish_post(
     else:
         logger.warning("Failed to publish post %s", post["reddit_id"])
 
-    await asyncio.sleep(config.pause_between_posts)
     return msg_id
