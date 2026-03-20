@@ -175,6 +175,7 @@ async def _send_video(client: httpx.AsyncClient, config: Config, caption: str, v
             "caption": caption[:MAX_CAPTION_LEN],
             "parse_mode": "HTML",
             "disable_web_page_preview": "true",
+            "supports_streaming": "true",
         },
         files={"video": video_path.read_bytes()},
     )
