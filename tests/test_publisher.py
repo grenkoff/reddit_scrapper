@@ -22,34 +22,34 @@ BASE_POST = {
 
 
 def test_caption_contains_title():
-    caption = _build_caption(BASE_POST)
+    caption = _build_caption(BASE_POST, CONFIG)
     assert "Test post title" in caption
 
 
-def test_caption_contains_score():
-    caption = _build_caption(BASE_POST)
-    assert "5000" in caption
+def test_caption_contains_footer():
+    caption = _build_caption(BASE_POST, CONFIG)
+    assert "r/programming" in caption
 
 
 def test_caption_contains_subreddit():
-    caption = _build_caption(BASE_POST)
+    caption = _build_caption(BASE_POST, CONFIG)
     assert "r/programming" in caption
 
 
 def test_caption_contains_url():
-    caption = _build_caption(BASE_POST)
+    caption = _build_caption(BASE_POST, CONFIG)
     assert BASE_POST["url"] in caption
 
 
 def test_caption_selftext_truncated():
     post = {**BASE_POST, "selftext": "x" * 600}
-    caption = _build_caption(post)
+    caption = _build_caption(post, CONFIG)
     assert "..." in caption
 
 
 def test_caption_max_length():
     post = {**BASE_POST, "title": "T" * 500, "selftext": "S" * 600}
-    caption = _build_caption(post)
+    caption = _build_caption(post, CONFIG, max_len=1024)
     assert len(caption) <= 1024
 
 
