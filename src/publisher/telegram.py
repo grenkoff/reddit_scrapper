@@ -1,4 +1,3 @@
-import asyncio
 import html as _html
 import json
 import logging
@@ -44,13 +43,13 @@ def _md_to_telegram_html(text: str) -> str:
         parts.append(_html.escape(text[last:m.start()]))
         token = m.group(0)
 
-        if token.startswith("**") and token.endswith("**"):
+        if (token.startswith("**") and token.endswith("**")) or (
+            token.startswith("__") and token.endswith("__")
+        ):
             parts.append(f"<b>{_html.escape(token[2:-2])}</b>")
-        elif token.startswith("__") and token.endswith("__"):
-            parts.append(f"<b>{_html.escape(token[2:-2])}</b>")
-        elif token.startswith("*") and token.endswith("*"):
-            parts.append(f"<i>{_html.escape(token[1:-1])}</i>")
-        elif token.startswith("_") and token.endswith("_"):
+        elif (token.startswith("*") and token.endswith("*")) or (
+            token.startswith("_") and token.endswith("_")
+        ):
             parts.append(f"<i>{_html.escape(token[1:-1])}</i>")
         elif token.startswith("~~") and token.endswith("~~"):
             parts.append(f"<s>{_html.escape(token[2:-2])}</s>")
@@ -135,10 +134,10 @@ def _chunk_text_evenly(body: str, footer: str) -> list[str]:
     chunks = []
     remaining = body
     while remaining:
-        if len(remaining) + len(footer_block) <= MAX_MESSAGE_LEN:
-            chunks.append(remaining + footer_block)
-            remaining = ""
-        elif len(remaining) <= chunk_size:
+        if (
+            len(remaining) + len(footer_block) <= MAX_MESSAGE_LEN
+            or len(remaining) <= chunk_size
+        ):
             chunks.append(remaining + footer_block)
             remaining = ""
         else:
@@ -160,7 +159,7 @@ async def _send_photo(client: httpx.AsyncClient, config: Config, caption: str, p
             "parse_mode": "HTML",
             "disable_web_page_preview": "true",
         },
-        files={"photo": photo_path.read_bytes()},
+        files={"photo": photo_path.read_bytes()},  # noqa: ASYNC240
     )
     if response.status_code == 200:
         return response.json()["result"]["message_id"]
@@ -195,7 +194,7 @@ async def _send_video(client: httpx.AsyncClient, config: Config, caption: str, v
             "disable_web_page_preview": "true",
             "supports_streaming": "true",
         },
-        files={"video": video_path.read_bytes()},
+        files={"video": video_path.read_bytes()},  # noqa: ASYNC240
     )
     if response.status_code == 200:
         return response.json()["result"]["message_id"]
@@ -212,7 +211,7 @@ async def _send_animation(client: httpx.AsyncClient, config: Config, caption: st
             "parse_mode": "HTML",
             "disable_web_page_preview": "true",
         },
-        files={"animation": anim_path.read_bytes()},
+        files={"animation": anim_path.read_bytes()},  # noqa: ASYNC240
     )
     if response.status_code == 200:
         return response.json()["result"]["message_id"]

@@ -78,7 +78,7 @@ async def download_video_direct(url: str, hls_url: str | None = None) -> Path | 
         if ffmpeg_dir:
             try:
                 logger.info("Downloading video with audio via HLS: %s", hls_url[:80])
-                TMP_DIR.mkdir(exist_ok=True)
+                TMP_DIR.mkdir(exist_ok=True)  # noqa: ASYNC240
                 output_template = str(TMP_DIR / "%(id)s.%(ext)s")
                 ydl_opts = {
                     "outtmpl": output_template,
@@ -100,7 +100,7 @@ async def download_video_direct(url: str, hls_url: str | None = None) -> Path | 
 
     # Fallback: direct download, video stream only (no audio)
     try:
-        TMP_DIR.mkdir(exist_ok=True)
+        TMP_DIR.mkdir(exist_ok=True)  # noqa: ASYNC240
         async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
             video_resp = await client.get(url)
             video_resp.raise_for_status()
@@ -127,7 +127,11 @@ def download_video(url: str) -> Path | None:
             "no_warnings": True,
             "ffmpeg_location": _ffmpeg_dir_for_ytdlp(),
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
             },
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

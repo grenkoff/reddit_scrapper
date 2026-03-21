@@ -72,7 +72,8 @@ async def insert_post(post: dict) -> None:
             """
             INSERT OR IGNORE INTO posts
                 (reddit_id, subreddit, title, author, url, content_url, selftext,
-                 score, num_comments, post_type, is_nsfw, media_urls, created_utc, scraped_at, preview_url, video_url, hls_url)
+                 score, num_comments, post_type, is_nsfw, media_urls,
+                 created_utc, scraped_at, preview_url, video_url, hls_url)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (

@@ -1,13 +1,28 @@
 import asyncio
+import contextlib
 import logging
 import signal
 import time
 from datetime import UTC, datetime
 
 from src.config import load_config
-from src.db import get_unpublished_posts, init_db, insert_post, is_post_exists, log_scrape, mark_as_published
+from src.db import (
+    get_unpublished_posts,
+    init_db,
+    insert_post,
+    is_post_exists,
+    log_scrape,
+    mark_as_published,
+)
 from src.publisher.telegram import publish_post
-from src.scraper.media import cleanup, compress_video, download_gif, download_image, download_video, download_video_direct
+from src.scraper.media import (
+    cleanup,
+    compress_video,
+    download_gif,
+    download_image,
+    download_video,
+    download_video_direct,
+)
 from src.scraper.reddit import fetch_top_posts
 
 logging.basicConfig(
@@ -130,10 +145,8 @@ async def main() -> None:
         await publish_one(config)
 
         # Wait before next publish tick
-        try:
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop_event.wait(), timeout=config.pause_between_posts)
-        except TimeoutError:
-            pass
 
     logger.info("Bot stopped")
 
