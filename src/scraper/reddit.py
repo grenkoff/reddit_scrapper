@@ -94,7 +94,7 @@ async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list
     """Fetch top-level comments sorted by score."""
     reddit_id = post["reddit_id"].removeprefix("t3_")
     url = f"https://www.reddit.com/r/{post['subreddit']}/comments/{reddit_id}.json"
-    params = {"raw_json": 1, "sort": "top", "limit": limit}
+    params = {"raw_json": 1, "sort": "top", "limit": 20}
     headers = {
         "User-Agent": config.reddit_user_agent,
         "Accept": "application/json",
@@ -116,6 +116,8 @@ async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list
             if child.get("kind") != "t1":
                 continue
             c = child["data"]
+            if c.get("stickied"):
+                continue
             comments.append(
                 {
                     "author": c.get("author", "[deleted]"),
@@ -124,6 +126,8 @@ async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list
                 }
             )
 
+        comments.sort(key=lambda x: x["score"], reverse=True)
+        comments = comments[:limit]
         logger.info("Fetched %d top comments for %s", len(comments), post["reddit_id"])
         return comments
     except Exception:

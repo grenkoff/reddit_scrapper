@@ -475,7 +475,7 @@ def _extract_media_url(body: str) -> tuple[str | None, str, str | None]:
 
 def _format_comment(comment: dict, body_override: str | None = None) -> str:
     body = body_override if body_override is not None else comment["body"]
-    header = f"\U0001f4ac <b>u/{_html.escape(comment['author'])}</b> (\u2b06 {comment['score']})"
+    header = f"\U0001f4ac <b>u/{_html.escape(comment['author'])}</b>"
     body_html = _md_to_telegram_html(body) if body else ""
     if body_html:
         return f"{header}\n\n{body_html}"
