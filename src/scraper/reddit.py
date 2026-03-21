@@ -88,3 +88,48 @@ async def fetch_top_posts(config: Config) -> list[dict]:
     posts = [_parse_post(child["data"]) for child in children]
     logger.info("Fetched %d posts from Reddit", len(posts))
     return posts
+
+
+async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list[dict]:
+    """Fetch top-level comments sorted by score."""
+    reddit_id = post["reddit_id"].removeprefix("t3_")
+    url = f"https://www.reddit.com/r/{post['subreddit']}/comments/{reddit_id}.json"
+    params = {"raw_json": 1, "sort": "top", "limit": 20}
+    headers = {
+        "User-Agent": config.reddit_user_agent,
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            response = await client.get(url, params=params, headers=headers)
+            response.raise_for_status()
+
+        data = response.json()
+        if not isinstance(data, list) or len(data) < 2:
+            return []
+
+        children = data[1].get("data", {}).get("children", [])
+        comments = []
+        for child in children:
+            if child.get("kind") != "t1":
+                continue
+            c = child["data"]
+            if c.get("stickied"):
+                continue
+            comments.append(
+                {
+                    "author": c.get("author", "[deleted]"),
+                    "body": c.get("body", ""),
+                    "score": c.get("score", 0),
+                }
+            )
+
+        comments.sort(key=lambda x: x["score"], reverse=True)
+        comments = comments[:limit]
+        logger.info("Fetched %d top comments for %s", len(comments), post["reddit_id"])
+        return comments
+    except Exception:
+        logger.warning("Failed to fetch comments for %s", post["reddit_id"], exc_info=True)
+        return []

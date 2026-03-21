@@ -1,9 +1,12 @@
 import asyncio
 import contextlib
 import logging
+import random
 import signal
 import time
 from datetime import UTC, datetime
+
+import httpx
 
 from src.config import load_config
 from src.db import (
@@ -14,7 +17,7 @@ from src.db import (
     log_scrape,
     mark_as_published,
 )
-from src.publisher.telegram import publish_post
+from src.publisher.telegram import get_discussion_message_id, publish_comment, publish_post
 from src.scraper.media import (
     cleanup,
     compress_video,
@@ -23,7 +26,7 @@ from src.scraper.media import (
     download_video,
     download_video_direct,
 )
-from src.scraper.reddit import fetch_top_posts
+from src.scraper.reddit import fetch_top_comments, fetch_top_posts
 
 logging.basicConfig(
     level=logging.INFO,
@@ -71,6 +74,45 @@ async def scrape_new_posts(config) -> None:
         )
 
 
+async def _publish_comments_delayed(config, post: dict, msg_id: int) -> None:
+    """Fetch top comments and publish them in discussion group over 10 minutes."""
+    try:
+        # Wait a moment for Telegram to auto-forward the post to discussion group
+        await asyncio.sleep(3)
+
+        # Find the auto-forwarded message in discussion group
+        discussion_msg_id = await get_discussion_message_id(config, msg_id)
+        if not discussion_msg_id:
+            logger.warning("Could not find discussion message for post %s", post["reddit_id"])
+            return
+
+        # Get linked discussion group chat_id
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                f"https://api.telegram.org/bot{config.telegram_bot_token}/getChat",
+                params={"chat_id": config.telegram_chat_id},
+            )
+            discussion_chat_id = response.json().get("result", {}).get("linked_chat_id")
+            if not discussion_chat_id:
+                return
+
+        comments = await fetch_top_comments(config, post)
+        if not comments:
+            return
+        count = min(random.randint(1, 5), len(comments))
+        comments = comments[:count]
+
+        delays = sorted(random.uniform(0, 600) for _ in range(count))
+        elapsed = 0.0
+        for delay, comment in zip(delays, comments, strict=True):
+            await asyncio.sleep(delay - elapsed)
+            elapsed = delay
+            await publish_comment(config, comment, discussion_chat_id, discussion_msg_id)
+        logger.info("Published %d comments for post %s", count, post["reddit_id"])
+    except Exception:
+        logger.warning("Failed to publish comments for %s", post["reddit_id"], exc_info=True)
+
+
 async def publish_one(config) -> bool:
     """Pick the next unpublished post and publish it. Returns True if published."""
     posts = await get_unpublished_posts(limit=1)
@@ -105,6 +147,7 @@ async def publish_one(config) -> bool:
 
     if msg_id:
         await mark_as_published(post["reddit_id"], msg_id)
+        asyncio.create_task(_publish_comments_delayed(config, post, msg_id))
 
     if media_path:
         cleanup(media_path)

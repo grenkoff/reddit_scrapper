@@ -404,3 +404,154 @@ async def publish_post(
         logger.warning("Failed to publish post %s", post["reddit_id"])
 
     return msg_id
+
+
+async def get_discussion_message_id(config: Config, channel_msg_id: int) -> int | None:
+    """Find the auto-forwarded message ID in the discussion group."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        # Get linked discussion group chat_id
+        response = await client.get(
+            _api_url(config.telegram_bot_token, "getChat"),
+            params={"chat_id": config.telegram_chat_id},
+        )
+        if response.status_code != 200:
+            return None
+        linked_chat_id = response.json().get("result", {}).get("linked_chat_id")
+        if not linked_chat_id:
+            return None
+
+        # Poll getUpdates to find the auto-forwarded message
+        response = await client.get(
+            _api_url(config.telegram_bot_token, "getUpdates"),
+            params={"offset": -20, "limit": 20},
+        )
+        if response.status_code != 200:
+            return None
+
+        for update in response.json().get("result", []):
+            msg = update.get("message", {})
+            if (
+                msg.get("is_automatic_forward")
+                and msg.get("chat", {}).get("id") == linked_chat_id
+                and msg.get("forward_from_message_id") == channel_msg_id
+            ):
+                return msg["message_id"]
+
+    return None
+
+
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+_GIF_DOMAINS = {"giphy.com", "tenor.com", "i.giphy.com", "media.tenor.com"}
+_MEDIA_URL_RE = re.compile(
+    r"!\[[^\]]*\]\((https?://[^)]+)\)"  # ![alt](url)
+    r"|(?<!\()(?<!\[)(https?://\S+\.(?:jpg|jpeg|png|webp|gif|mp4)(?:\?\S*)?)",  # bare URL
+    re.IGNORECASE,
+)
+
+
+def _extract_media_url(body: str) -> tuple[str | None, str, str | None]:
+    """Extract first media URL from comment body. Returns (url, clean_body, media_type)."""
+    m = _MEDIA_URL_RE.search(body)
+    if not m:
+        return None, body, None
+
+    media_url = m.group(1) or m.group(2)
+    clean_body = body[: m.start()].rstrip() + body[m.end() :].lstrip()
+    clean_body = clean_body.strip()
+
+    parsed = urlparse(media_url)
+    path_lower = parsed.path.lower()
+    domain = parsed.netloc.lower()
+
+    if any(path_lower.endswith(ext) for ext in _IMAGE_EXTS):
+        return media_url, clean_body, "image"
+    if path_lower.endswith(".gif") or any(d in domain for d in _GIF_DOMAINS):
+        return media_url, clean_body, "gif"
+    if path_lower.endswith(".mp4"):
+        return media_url, clean_body, "video"
+
+    return media_url, clean_body, "image"  # default to image
+
+
+def _format_comment(comment: dict, body_override: str | None = None) -> str:
+    body = body_override if body_override is not None else comment["body"]
+    header = f"\U0001f4ac <b>u/{_html.escape(comment['author'])}</b>"
+    body_html = _md_to_telegram_html(body) if body else ""
+    if body_html:
+        return f"{header}\n\n{body_html}"
+    return header
+
+
+async def publish_comment(
+    config: Config,
+    comment: dict,
+    discussion_chat_id: int,
+    reply_to_message_id: int,
+) -> int | None:
+    """Send one comment as reply in the discussion group."""
+    media_url, clean_body, media_type = _extract_media_url(comment["body"])
+    caption = _format_comment(comment, body_override=clean_body)
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        msg_id = None
+
+        if media_url and media_type == "image":
+            response = await client.post(
+                _api_url(config.telegram_bot_token, "sendPhoto"),
+                data={
+                    "chat_id": discussion_chat_id,
+                    "photo": media_url,
+                    "caption": caption[:MAX_CAPTION_LEN],
+                    "parse_mode": "HTML",
+                    "reply_to_message_id": reply_to_message_id,
+                },
+            )
+            if response.status_code == 200:
+                msg_id = response.json()["result"]["message_id"]
+
+        elif media_url and media_type == "gif":
+            response = await client.post(
+                _api_url(config.telegram_bot_token, "sendAnimation"),
+                data={
+                    "chat_id": discussion_chat_id,
+                    "animation": media_url,
+                    "caption": caption[:MAX_CAPTION_LEN],
+                    "parse_mode": "HTML",
+                    "reply_to_message_id": reply_to_message_id,
+                },
+            )
+            if response.status_code == 200:
+                msg_id = response.json()["result"]["message_id"]
+
+        elif media_url and media_type == "video":
+            response = await client.post(
+                _api_url(config.telegram_bot_token, "sendVideo"),
+                data={
+                    "chat_id": discussion_chat_id,
+                    "video": media_url,
+                    "caption": caption[:MAX_CAPTION_LEN],
+                    "parse_mode": "HTML",
+                    "reply_to_message_id": reply_to_message_id,
+                    "supports_streaming": "true",
+                },
+            )
+            if response.status_code == 200:
+                msg_id = response.json()["result"]["message_id"]
+
+        # Fallback to text if no media or media send failed
+        if not msg_id:
+            text = _format_comment(comment) if media_url else caption
+            response = await client.post(
+                _api_url(config.telegram_bot_token, "sendMessage"),
+                data={
+                    "chat_id": discussion_chat_id,
+                    "text": text[:MAX_MESSAGE_LEN],
+                    "parse_mode": "HTML",
+                    "reply_to_message_id": reply_to_message_id,
+                    "disable_web_page_preview": "true",
+                },
+            )
+            if response.status_code == 200:
+                msg_id = response.json()["result"]["message_id"]
+
+    return msg_id
