@@ -46,6 +46,7 @@ async def download_gif(url: str) -> Path | None:
 def _get_ffmpeg() -> str | None:
     try:
         import imageio_ffmpeg
+
         return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
         return None
@@ -147,7 +148,8 @@ def _get_duration(ffmpeg_bin: str, path: Path) -> float | None:
     """Parse video duration in seconds from ffmpeg stderr."""
     result = subprocess.run(
         [ffmpeg_bin, "-i", str(path)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", result.stderr)
     if m:
@@ -170,8 +172,7 @@ def compress_video(path: Path, max_mb: int = 49) -> Path:
         size_mb = path.stat().st_size / (1024 * 1024)
 
         if size_mb <= max_mb:
-            cmd = [ffmpeg, "-y", "-i", str(path),
-                   "-c", "copy", "-movflags", "+faststart", str(out_path)]
+            cmd = [ffmpeg, "-y", "-i", str(path), "-c", "copy", "-movflags", "+faststart", str(out_path)]
         else:
             duration = _get_duration(ffmpeg, path)
             if duration and duration > 0:
@@ -179,12 +180,29 @@ def compress_video(path: Path, max_mb: int = 49) -> Path:
                 target_kbps = max(int(max_mb * 8 * 1024 / duration) - audio_kbps, 200)
             else:
                 target_kbps = 800
-            cmd = [ffmpeg, "-y", "-i", str(path),
-                   "-c:v", "libx264", "-b:v", f"{target_kbps}k",
-                   "-maxrate", f"{target_kbps}k", "-bufsize", f"{target_kbps * 2}k",
-                   "-preset", "fast", "-movflags", "+faststart",
-                   "-c:a", "aac", "-b:a", "128k",
-                   str(out_path)]
+            cmd = [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(path),
+                "-c:v",
+                "libx264",
+                "-b:v",
+                f"{target_kbps}k",
+                "-maxrate",
+                f"{target_kbps}k",
+                "-bufsize",
+                f"{target_kbps * 2}k",
+                "-preset",
+                "fast",
+                "-movflags",
+                "+faststart",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                str(out_path),
+            ]
 
         subprocess.run(cmd, capture_output=True, check=True)
         path.unlink(missing_ok=True)

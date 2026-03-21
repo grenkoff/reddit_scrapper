@@ -43,12 +43,7 @@ def _extract_media_urls(data: dict) -> list[str] | None:
 
 def _parse_post(data: dict) -> dict:
     post_type = _detect_post_type(data)
-    raw_preview = (
-        data.get("preview", {})
-            .get("images", [{}])[0]
-            .get("source", {})
-            .get("url", "")
-    )
+    raw_preview = data.get("preview", {}).get("images", [{}])[0].get("source", {}).get("url", "")
     return {
         "reddit_id": f"t3_{data['id']}",
         "subreddit": data["subreddit"],
@@ -67,11 +62,13 @@ def _parse_post(data: dict) -> dict:
         "video_url": (
             (data.get("media") or {}).get("reddit_video", {}).get("fallback_url")
             or (data.get("secure_media") or {}).get("reddit_video", {}).get("fallback_url")
-        ) or None,
+        )
+        or None,
         "hls_url": (
             (data.get("media") or {}).get("reddit_video", {}).get("hls_url")
             or (data.get("secure_media") or {}).get("reddit_video", {}).get("hls_url")
-        ) or None,
+        )
+        or None,
     }
 
 

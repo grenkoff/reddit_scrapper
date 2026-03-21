@@ -26,37 +26,33 @@ def _api_url(token: str, method: str) -> str:
 def _md_to_telegram_html(text: str) -> str:
     """Convert Reddit markdown subset to Telegram HTML."""
     pattern = re.compile(
-        r'(\*\*(?:.+?)\*\*'
-        r'|__(?:.+?)__'
-        r'|\*(?:.+?)\*'
-        r'|_(?:.+?)_'
-        r'|~~(?:.+?)~~'
-        r'|`(?:[^`]+)`'
-        r'|\[(?:[^\]]+)\]\((?:[^)]+)\)'
-        r')',
+        r"(\*\*(?:.+?)\*\*"
+        r"|__(?:.+?)__"
+        r"|\*(?:.+?)\*"
+        r"|_(?:.+?)_"
+        r"|~~(?:.+?)~~"
+        r"|`(?:[^`]+)`"
+        r"|\[(?:[^\]]+)\]\((?:[^)]+)\)"
+        r")",
         re.DOTALL,
     )
 
     parts = []
     last = 0
     for m in pattern.finditer(text):
-        parts.append(_html.escape(text[last:m.start()]))
+        parts.append(_html.escape(text[last : m.start()]))
         token = m.group(0)
 
-        if (token.startswith("**") and token.endswith("**")) or (
-            token.startswith("__") and token.endswith("__")
-        ):
+        if (token.startswith("**") and token.endswith("**")) or (token.startswith("__") and token.endswith("__")):
             parts.append(f"<b>{_html.escape(token[2:-2])}</b>")
-        elif (token.startswith("*") and token.endswith("*")) or (
-            token.startswith("_") and token.endswith("_")
-        ):
+        elif (token.startswith("*") and token.endswith("*")) or (token.startswith("_") and token.endswith("_")):
             parts.append(f"<i>{_html.escape(token[1:-1])}</i>")
         elif token.startswith("~~") and token.endswith("~~"):
             parts.append(f"<s>{_html.escape(token[2:-2])}</s>")
         elif token.startswith("`") and token.endswith("`"):
             parts.append(f"<code>{_html.escape(token[1:-1])}</code>")
         elif token.startswith("["):
-            lm = re.match(r'\[([^\]]+)\]\(([^)]+)\)', token)
+            lm = re.match(r"\[([^\]]+)\]\(([^)]+)\)", token)
             if lm:
                 parts.append(f'<a href="{lm.group(2)}">{_html.escape(lm.group(1))}</a>')
         last = m.end()
@@ -89,7 +85,7 @@ def _build_footer(post: dict, config: Config) -> str:
 
 
 def _build_caption(post: dict, config: Config, max_len: int | None = None) -> str:
-    title = f'<b>{_html.escape(post["title"])}</b>'
+    title = f"<b>{_html.escape(post['title'])}</b>"
     footer = _build_footer(post, config)
     limit = max_len or MAX_MESSAGE_LEN
 
@@ -134,10 +130,7 @@ def _chunk_text_evenly(body: str, footer: str) -> list[str]:
     chunks = []
     remaining = body
     while remaining:
-        if (
-            len(remaining) + len(footer_block) <= MAX_MESSAGE_LEN
-            or len(remaining) <= chunk_size
-        ):
+        if len(remaining) + len(footer_block) <= MAX_MESSAGE_LEN or len(remaining) <= chunk_size:
             chunks.append(remaining + footer_block)
             remaining = ""
         else:
@@ -266,7 +259,7 @@ async def _publish_text_messages(
     config: Config,
     post: dict,
 ) -> int | None:
-    title_html = f'<b>{_html.escape(post["title"])}</b>'
+    title_html = f"<b>{_html.escape(post['title'])}</b>"
     selftext_raw = post.get("selftext") or ""
     footer = _build_footer(post, config)
 
@@ -312,14 +305,14 @@ async def _publish_gallery(
     caption: str,
 ) -> int | None:
     selftext = post.get("selftext") or ""
-    title_html = f'<b>{_html.escape(post["title"])}</b>'
+    title_html = f"<b>{_html.escape(post['title'])}</b>"
     footer = _build_footer(post, config)
 
     # Check if FULL selftext fits in caption (not the pre-truncated one)
     full_caption = f"{title_html}\n\n{_md_to_telegram_html(selftext)}\n\n{footer}" if selftext else caption
     text_fits = len(full_caption) <= MAX_CAPTION_LEN
 
-    groups = [media_paths[i:i + MEDIA_GROUP_MAX] for i in range(0, len(media_paths), MEDIA_GROUP_MAX)]
+    groups = [media_paths[i : i + MEDIA_GROUP_MAX] for i in range(0, len(media_paths), MEDIA_GROUP_MAX)]
 
     # Send all groups except the last without caption
     for group in groups[:-1]:

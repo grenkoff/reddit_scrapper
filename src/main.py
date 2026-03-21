@@ -36,6 +36,7 @@ _VIDEO_DOMAINS = {"youtube.com", "youtu.be", "vimeo.com", "twitter.com", "x.com"
 
 def _is_video_url(url: str) -> bool:
     from urllib.parse import urlparse
+
     netloc = urlparse(url).netloc.lower()
     return any(d in netloc for d in _VIDEO_DOMAINS)
 
@@ -128,8 +129,9 @@ async def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _handle_signal)
 
-    logger.info("Bot started — publish every %.0fs, scrape every %ds",
-                config.pause_between_posts, config.scrape_interval)
+    logger.info(
+        "Bot started — publish every %.0fs, scrape every %ds", config.pause_between_posts, config.scrape_interval
+    )
 
     last_scrape: float = 0.0
 
