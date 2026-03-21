@@ -66,6 +66,8 @@ def _md_to_telegram_html(text: str) -> str:
     result = "".join(parts)
     # Headings: # text → <b>text</b>
     result = re.sub(r"^#{1,6}\s+(.+)$", r"<b>\1</b>", result, flags=re.MULTILINE)
+    # Collapse 3+ newlines into 2 (single blank line between paragraphs)
+    result = re.sub(r"\n{3,}", "\n\n", result)
     return result
 
 
@@ -87,20 +89,36 @@ def _build_footer(post: dict, config: Config) -> str:
     return "\n".join(parts)
 
 
-def _build_caption(post: dict, config: Config) -> str:
-    parts = [f'<b>{_html.escape(post["title"])}</b>']
+def _build_caption(post: dict, config: Config, max_len: int | None = None) -> str:
+    title = f'<b>{_html.escape(post["title"])}</b>'
+    footer = _build_footer(post, config)
+    limit = max_len or MAX_MESSAGE_LEN
 
-    if post.get("selftext"):
-        text = post["selftext"]
+    if not post.get("selftext"):
+        return f"{title}\n\n{footer}"
+
+    text = post["selftext"]
+    converted = _md_to_telegram_html(text)
+
+    # Try full selftext (up to MAX_SELFTEXT_IN_CAPTION)
+    if len(converted) > MAX_SELFTEXT_IN_CAPTION:
+        text = text[:MAX_SELFTEXT_IN_CAPTION] + "..."
         converted = _md_to_telegram_html(text)
-        if len(converted) > MAX_SELFTEXT_IN_CAPTION:
-            # Truncate raw text, then convert
-            text = text[:MAX_SELFTEXT_IN_CAPTION] + "..."
-            converted = _md_to_telegram_html(text)
-        parts.append(converted)
 
-    parts.append(_build_footer(post, config))
-    return "\n\n".join(parts)
+    candidate = f"{title}\n\n{converted}\n\n{footer}"
+    if len(candidate) <= limit:
+        return candidate
+
+    # Shrink selftext to fit within limit
+    overhead = len(title) + len(footer) + 8  # 2x "\n\n" + "..."
+    available = limit - overhead
+    if available > 0:
+        text = post["selftext"][:available]
+        converted = _md_to_telegram_html(text + "...")
+        return f"{title}\n\n{converted}\n\n{footer}"
+
+    # No room for selftext at all
+    return f"{title}\n\n{footer}"
 
 
 def _chunk_text_evenly(body: str, footer: str) -> list[str]:
@@ -294,14 +312,46 @@ async def _publish_gallery(
     media_paths: list[Path],
     caption: str,
 ) -> int | None:
-    # If all images fit in one group and caption fits — send together
-    if len(media_paths) <= MEDIA_GROUP_MAX and len(caption) <= MAX_CAPTION_LEN:
-        return await _send_media_group(client, config, media_paths, caption=caption)
+    selftext = post.get("selftext") or ""
+    title_html = f'<b>{_html.escape(post["title"])}</b>'
+    footer = _build_footer(post, config)
 
-    # Otherwise send all groups without caption, then send text separately
+    # Check if FULL selftext fits in caption (not the pre-truncated one)
+    full_caption = f"{title_html}\n\n{_md_to_telegram_html(selftext)}\n\n{footer}" if selftext else caption
+    text_fits = len(full_caption) <= MAX_CAPTION_LEN
+
     groups = [media_paths[i:i + MEDIA_GROUP_MAX] for i in range(0, len(media_paths), MEDIA_GROUP_MAX)]
-    for group in groups:
+
+    # Send all groups except the last without caption
+    for group in groups[:-1]:
         await _send_media_group(client, config, group, caption=None)
+
+    last_group = groups[-1]
+
+    if text_fits:
+        # Everything fits in caption — send with full text
+        return await _send_media_group(client, config, last_group, caption=full_caption)
+
+    if not selftext:
+        short_caption = f"{title_html}\n\n{footer}"
+        return await _send_media_group(client, config, last_group, caption=short_caption)
+
+    # Selftext too long: split evenly between caption and text message(s)
+    overhead = len(title_html) + len(footer) + 8  # "\n\n" separators + "..."
+    available_in_caption = MAX_CAPTION_LEN - overhead
+
+    if available_in_caption > 0:
+        # Even split: half in caption, half in text message (caption capped)
+        target = min(available_in_caption, len(selftext) // 2)
+        split_at = selftext.rfind(" ", 0, target)
+        if split_at <= 0:
+            split_at = target
+        caption_part = _md_to_telegram_html(selftext[:split_at] + "...")
+        short_caption = f"{title_html}\n\n{caption_part}\n\n{footer}"
+    else:
+        short_caption = f"{title_html}\n\n{footer}"
+
+    await _send_media_group(client, config, last_group, caption=short_caption)
     return await _publish_text_messages(client, config, post)
 
 
