@@ -187,7 +187,11 @@ async def main() -> None:
             last_scrape = time.monotonic()
 
         # Publish one post
-        await publish_one(config)
+        # Publish one post (with timeout to prevent hanging on media download)
+        try:
+            await asyncio.wait_for(publish_one(config), timeout=300)
+        except TimeoutError:
+            logger.warning("publish_one timed out after 5 minutes")
 
         # Wait before next publish tick
         with contextlib.suppress(TimeoutError):
