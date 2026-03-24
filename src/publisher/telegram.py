@@ -239,7 +239,7 @@ async def _send_media_group(
     for i, key in enumerate(files):
         entry: dict = {"type": "photo", "media": f"attach://{key}"}
         if i == 0 and caption:
-            entry["caption"] = caption[:MAX_CAPTION_LEN]
+            entry["caption"] = caption
             entry["parse_mode"] = "HTML"
         media.append(entry)
 
@@ -304,47 +304,12 @@ async def _publish_gallery(
     media_paths: list[Path],
     caption: str,
 ) -> int | None:
-    selftext = post.get("selftext") or ""
-    title_html = f"<b>{_html.escape(post['title'])}</b>"
-    footer = _build_footer(post, config)
-
-    # Check if FULL selftext fits in caption (not the pre-truncated one)
-    full_caption = f"{title_html}\n\n{_md_to_telegram_html(selftext)}\n\n{footer}" if selftext else caption
-    text_fits = len(full_caption) <= MAX_CAPTION_LEN
-
     groups = [media_paths[i : i + MEDIA_GROUP_MAX] for i in range(0, len(media_paths), MEDIA_GROUP_MAX)]
 
-    # Send all groups except the last without caption
     for group in groups[:-1]:
         await _send_media_group(client, config, group, caption=None)
 
-    last_group = groups[-1]
-
-    if text_fits:
-        # Everything fits in caption — send with full text
-        return await _send_media_group(client, config, last_group, caption=full_caption)
-
-    if not selftext:
-        short_caption = f"{title_html}\n\n{footer}"
-        return await _send_media_group(client, config, last_group, caption=short_caption)
-
-    # Selftext too long: split evenly between caption and text message(s)
-    overhead = len(title_html) + len(footer) + 8  # "\n\n" separators + "..."
-    available_in_caption = MAX_CAPTION_LEN - overhead
-
-    if available_in_caption > 0:
-        # Even split: half in caption, half in text message (caption capped)
-        target = min(available_in_caption, len(selftext) // 2)
-        split_at = selftext.rfind(" ", 0, target)
-        if split_at <= 0:
-            split_at = target
-        caption_part = _md_to_telegram_html(selftext[:split_at] + "...")
-        short_caption = f"{title_html}\n\n{caption_part}\n\n{footer}"
-    else:
-        short_caption = f"{title_html}\n\n{footer}"
-
-    await _send_media_group(client, config, last_group, caption=short_caption)
-    return await _publish_text_messages(client, config, post)
+    return await _send_media_group(client, config, groups[-1], caption=caption)
 
 
 async def _publish_link(
@@ -366,20 +331,41 @@ async def _publish_link(
     return await _send_message(client, config, caption)
 
 
+async def _send_overflow_text(
+    client: httpx.AsyncClient,
+    config: Config,
+    post: dict,
+) -> None:
+    """Send selftext that didn't fit in the media caption as follow-up messages."""
+    selftext = post.get("selftext") or ""
+    if not selftext:
+        return
+    title_html = f"<b>{_html.escape(post['title'])}</b>"
+    footer = _build_footer(post, config)
+    full_caption = f"{title_html}\n\n{_md_to_telegram_html(selftext)}\n\n{footer}"
+    if len(full_caption) <= MAX_CAPTION_LEN:
+        return  # everything fit, no overflow
+
+    # Send full selftext as text messages (without repeating title)
+    selftext_html = _md_to_telegram_html(selftext)
+    chunks = _chunk_text_evenly(selftext_html, footer)
+    for chunk in chunks:
+        await _send_message(client, config, chunk)
+
+
 async def publish_post(
     config: Config,
     post: dict,
     media_path: Path | None = None,
     media_paths: list[Path] | None = None,
 ) -> int | None:
-    caption = _build_caption(post, config)
+    caption = _build_caption(post, config, max_len=MAX_CAPTION_LEN)
     post_type = post["post_type"]
 
     async with httpx.AsyncClient(timeout=None) as client:
         if post_type == "image" and media_path:
             msg_id = await _send_photo(client, config, caption, media_path)
             if not msg_id:
-                # File too large or other error — try URL fallback
                 preview_url = post.get("preview_url") or post.get("content_url")
                 if preview_url:
                     msg_id = await _send_photo_url(client, config, caption, preview_url)
@@ -397,6 +383,10 @@ async def publish_post(
             msg_id = await _publish_link(client, config, post, caption, media_path)
         else:
             msg_id = await _send_message(client, config, caption)
+
+        # Send overflow text for media posts where caption was truncated
+        if msg_id and post_type not in ("text", "gallery"):
+            await _send_overflow_text(client, config, post)
 
     if msg_id:
         logger.info("Published post %s to Telegram (message_id=%d)", post["reddit_id"], msg_id)
@@ -447,10 +437,20 @@ _MEDIA_URL_RE = re.compile(
     r"|(?<!\()(?<!\[)(https?://\S+\.(?:jpg|jpeg|png|webp|gif|mp4)(?:\?\S*)?)",  # bare URL
     re.IGNORECASE,
 )
+# Reddit inline gif/image: ![gif](giphy|ID) or ![img](emote|ID)
+_REDDIT_INLINE_RE = re.compile(r"!\[(?:gif|img)\]\(giphy\|([a-zA-Z0-9_-]+)\)")
 
 
 def _extract_media_url(body: str) -> tuple[str | None, str, str | None]:
     """Extract first media URL from comment body. Returns (url, clean_body, media_type)."""
+    # Check for Reddit inline giphy format: ![gif](giphy|ID)
+    m = _REDDIT_INLINE_RE.search(body)
+    if m:
+        giphy_id = m.group(1)
+        media_url = f"https://i.giphy.com/media/{giphy_id}/giphy.gif"
+        clean_body = body[: m.start()].rstrip() + body[m.end() :].lstrip()
+        return media_url, clean_body.strip(), "gif"
+
     m = _MEDIA_URL_RE.search(body)
     if not m:
         return None, body, None
