@@ -25,6 +25,8 @@ def _api_url(token: str, method: str) -> str:
 
 def _md_to_telegram_html(text: str) -> str:
     """Convert Reddit markdown subset to Telegram HTML."""
+    # Remove Reddit markdown backslash escapes (e.g. \- \( \) \. \# etc.)
+    text = re.sub(r"\\([^a-zA-Z0-9\s])", r"\1", text)
     pattern = re.compile(
         r"(\*\*(?:.+?)\*\*"
         r"|__(?:.+?)__"
