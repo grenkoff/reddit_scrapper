@@ -3,9 +3,13 @@
 
 # SQLite
 data/
+*.db
 
 # Temporary media
 tmp/
+
+# Logs
+*.log
 
 # Python
 __pycache__/
