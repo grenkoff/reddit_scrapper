@@ -63,8 +63,8 @@ def _md_to_telegram_html(text: str) -> str:
     result = "".join(parts)
     # Headings: # text → <b>text</b>
     result = re.sub(r"^#{1,6}\s+(.+)$", r"<b>\1</b>", result, flags=re.MULTILINE)
-    # Collapse 3+ newlines into 2 (single blank line between paragraphs)
-    result = re.sub(r"\n{3,}", "\n\n", result)
+    # Collapse redundant blank lines (with optional whitespace) into single blank line
+    result = re.sub(r"(\n[ \t]*){2,}", "\n\n", result)
     return result
 
 
