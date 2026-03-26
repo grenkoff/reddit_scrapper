@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 MAX_CAPTION_LEN = 1024
 MAX_MESSAGE_LEN = 4096
-MAX_SELFTEXT_IN_CAPTION = 500
 MEDIA_GROUP_MAX = 10
 
 
@@ -86,36 +85,51 @@ def _build_footer(post: dict, config: Config) -> str:
     return "\n".join(parts)
 
 
-def _build_caption(post: dict, config: Config, max_len: int | None = None) -> str:
-    title = f"<b>{_html.escape(post['title'])}</b>"
+def _build_media_texts(post: dict, config: Config) -> tuple[str, list[str]]:
+    """Build (caption, overflow_messages) for media posts.
+
+    Caption: title + beginning of selftext (as much as fits MAX_CAPTION_LEN).
+    Overflow: remaining selftext split evenly, footer in the last message.
+    """
+    title_html = f"<b>{_html.escape(post['title'])}</b>"
     footer = _build_footer(post, config)
-    limit = max_len or MAX_MESSAGE_LEN
+    selftext = post.get("selftext") or ""
+    footer_block = f"\n\n{footer}"
 
-    if not post.get("selftext"):
-        return f"{title}\n\n{footer}"
+    if not selftext:
+        return f"{title_html}{footer_block}", []
 
-    text = post["selftext"]
-    converted = _md_to_telegram_html(text)
+    selftext_html = _md_to_telegram_html(selftext)
+    title_block = f"{title_html}\n\n"
 
-    # Try full selftext (up to MAX_SELFTEXT_IN_CAPTION)
-    if len(converted) > MAX_SELFTEXT_IN_CAPTION:
-        text = text[:MAX_SELFTEXT_IN_CAPTION] + "..."
-        converted = _md_to_telegram_html(text)
+    # Try to fit everything in one caption
+    full = f"{title_block}{selftext_html}{footer_block}"
+    if len(full) <= MAX_CAPTION_LEN:
+        return full, []
 
-    candidate = f"{title}\n\n{converted}\n\n{footer}"
-    if len(candidate) <= limit:
-        return candidate
+    # Caption gets title + as much selftext as fits
+    caption_budget = MAX_CAPTION_LEN - len(title_block)
+    if caption_budget <= 0:
+        return title_html[:MAX_CAPTION_LEN], _chunk_text_evenly(selftext_html, footer)
 
-    # Shrink selftext to fit within limit
-    overhead = len(title) + len(footer) + 8  # 2x "\n\n" + "..."
-    available = limit - overhead
-    if available > 0:
-        text = post["selftext"][:available]
-        converted = _md_to_telegram_html(text + "...")
-        return f"{title}\n\n{converted}\n\n{footer}"
+    if len(selftext_html) <= caption_budget:
+        caption_text = selftext_html
+        remaining = ""
+    else:
+        split = selftext_html.rfind(" ", 0, caption_budget)
+        if split == -1:
+            split = caption_budget
+        caption_text = selftext_html[:split]
+        remaining = selftext_html[split:].lstrip()
 
-    # No room for selftext at all
-    return f"{title}\n\n{footer}"
+    caption = f"{title_block}{caption_text}"
+
+    if not remaining:
+        return caption, [footer]
+
+    # Split remaining evenly across messages, footer on last
+    messages = _chunk_text_evenly(remaining, footer)
+    return caption, messages
 
 
 def _chunk_text_evenly(body: str, footer: str) -> list[str]:
@@ -333,35 +347,13 @@ async def _publish_link(
     return await _send_message(client, config, caption)
 
 
-async def _send_overflow_text(
-    client: httpx.AsyncClient,
-    config: Config,
-    post: dict,
-) -> None:
-    """Send selftext that didn't fit in the media caption as follow-up messages."""
-    selftext = post.get("selftext") or ""
-    if not selftext:
-        return
-    title_html = f"<b>{_html.escape(post['title'])}</b>"
-    footer = _build_footer(post, config)
-    full_caption = f"{title_html}\n\n{_md_to_telegram_html(selftext)}\n\n{footer}"
-    if len(full_caption) <= MAX_CAPTION_LEN:
-        return  # everything fit, no overflow
-
-    # Send full selftext as text messages (without repeating title)
-    selftext_html = _md_to_telegram_html(selftext)
-    chunks = _chunk_text_evenly(selftext_html, footer)
-    for chunk in chunks:
-        await _send_message(client, config, chunk)
-
-
 async def publish_post(
     config: Config,
     post: dict,
     media_path: Path | None = None,
     media_paths: list[Path] | None = None,
 ) -> int | None:
-    caption = _build_caption(post, config, max_len=MAX_CAPTION_LEN)
+    caption, overflow = _build_media_texts(post, config)
     post_type = post["post_type"]
 
     async with httpx.AsyncClient(timeout=None) as client:
@@ -386,9 +378,10 @@ async def publish_post(
         else:
             msg_id = await _send_message(client, config, caption)
 
-        # Send overflow text for media posts where caption was truncated
-        if msg_id and post_type not in ("text", "gallery"):
-            await _send_overflow_text(client, config, post)
+        # Send overflow messages for non-text posts
+        if msg_id and overflow:
+            for text in overflow:
+                await _send_message(client, config, text)
 
     if msg_id:
         logger.info("Published post %s to Telegram (message_id=%d)", post["reddit_id"], msg_id)

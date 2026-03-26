@@ -2,7 +2,7 @@ import respx
 from httpx import Response
 
 from src.config import Config
-from src.publisher.telegram import _build_caption, publish_post
+from src.publisher.telegram import _build_media_texts, publish_post
 
 CONFIG = Config(telegram_bot_token="testtoken", telegram_chat_id="-100123456", pause_between_posts=0)
 
@@ -22,34 +22,39 @@ BASE_POST = {
 
 
 def test_caption_contains_title():
-    caption = _build_caption(BASE_POST, CONFIG)
+    caption, _ = _build_media_texts(BASE_POST, CONFIG)
     assert "Test post title" in caption
 
 
 def test_caption_contains_footer():
-    caption = _build_caption(BASE_POST, CONFIG)
+    caption, _ = _build_media_texts(BASE_POST, CONFIG)
     assert "r/programming" in caption
 
 
 def test_caption_contains_subreddit():
-    caption = _build_caption(BASE_POST, CONFIG)
+    caption, _ = _build_media_texts(BASE_POST, CONFIG)
     assert "r/programming" in caption
 
 
 def test_caption_contains_url():
-    caption = _build_caption(BASE_POST, CONFIG)
+    caption, _ = _build_media_texts(BASE_POST, CONFIG)
     assert BASE_POST["url"] in caption
 
 
-def test_caption_selftext_truncated():
-    post = {**BASE_POST, "selftext": "x" * 600}
-    caption = _build_caption(post, CONFIG)
-    assert "..." in caption
+def test_caption_overflow_no_duplication():
+    post = {**BASE_POST, "selftext": "word " * 300}
+    caption, overflow = _build_media_texts(post, CONFIG)
+    assert len(caption) <= 1024
+    assert len(overflow) > 0
+    # Caption text should not repeat in overflow
+    caption_text = caption.split("\n\n", 1)[1] if "\n\n" in caption else ""
+    for msg in overflow:
+        assert caption_text not in msg
 
 
 def test_caption_max_length():
     post = {**BASE_POST, "title": "T" * 500, "selftext": "S" * 600}
-    caption = _build_caption(post, CONFIG, max_len=1024)
+    caption, _ = _build_media_texts(post, CONFIG)
     assert len(caption) <= 1024
 
 
