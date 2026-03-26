@@ -16,9 +16,9 @@ def _detect_post_type(data: dict) -> str:
         return "gallery"
     if data.get("is_video"):
         return "video"
-    if data.get("post_hint") == "animated_image":
-        return "gif"
     url = data.get("url", "")
+    if data.get("post_hint") == "animated_image" or url.lower().endswith(".gif"):
+        return "gif"
     if data.get("post_hint") == "image" or url.startswith("https://i.redd.it"):
         return "image"
     if data.get("selftext"):
