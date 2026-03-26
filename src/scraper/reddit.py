@@ -85,7 +85,13 @@ async def fetch_top_posts(config: Config) -> list[dict]:
         response.raise_for_status()
 
     children = response.json().get("data", {}).get("children", [])
-    posts = [_parse_post(child["data"]) for child in children]
+    posts = []
+    for child in children:
+        d = child["data"]
+        if d.get("removed_by_category") or d.get("selftext") == "[removed]":
+            logger.debug("Skipping removed post %s", d.get("id"))
+            continue
+        posts.append(_parse_post(d))
     logger.info("Fetched %d posts from Reddit", len(posts))
     return posts
 
