@@ -28,6 +28,31 @@ async def download_image(url: str) -> Path | None:
         return None
 
 
+def _convert_gif_to_mp4(gif_path: Path) -> Path:
+    """Convert a .gif file to .mp4 so Telegram plays it inline."""
+    ffmpeg = _get_ffmpeg()
+    if not ffmpeg:
+        return gif_path
+    try:
+        mp4_path = gif_path.with_suffix(".mp4")
+        subprocess.run(
+            [
+                ffmpeg, "-y", "-i", str(gif_path),
+                "-movflags", "+faststart",
+                "-pix_fmt", "yuv420p",
+                "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                "-an", str(mp4_path),
+            ],
+            capture_output=True,
+            check=True,
+        )
+        gif_path.unlink(missing_ok=True)
+        return mp4_path
+    except Exception:
+        logger.warning("GIF→MP4 conversion failed, using original: %s", gif_path, exc_info=True)
+        return gif_path
+
+
 async def download_gif(url: str) -> Path | None:
     try:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -35,9 +60,15 @@ async def download_gif(url: str) -> Path | None:
             response.raise_for_status()
 
         suffix = Path(url.split("?")[0]).suffix or ".mp4"
+        TMP_DIR.mkdir(exist_ok=True)  # noqa: ASYNC240
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, dir=TMP_DIR) as tmp_file:
             tmp_file.write(response.content)
-            return Path(tmp_file.name)
+            path = Path(tmp_file.name)
+
+        if path.suffix.lower() == ".gif":
+            path = await asyncio.get_event_loop().run_in_executor(None, _convert_gif_to_mp4, path)
+
+        return path
     except Exception:
         logger.warning("Failed to download gif: %s", url, exc_info=True)
         return None
