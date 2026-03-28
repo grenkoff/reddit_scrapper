@@ -124,6 +124,8 @@ async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list
             c = child["data"]
             if c.get("stickied"):
                 continue
+            if c.get("author") in ("[deleted]", None) or c.get("body") in ("[removed]", "[deleted]", ""):
+                continue
             comments.append(
                 {
                     "author": c.get("author", "[deleted]"),

@@ -220,7 +220,7 @@ async def _send_animation(client: httpx.AsyncClient, config: Config, caption: st
             "parse_mode": "HTML",
             "disable_web_page_preview": "true",
         },
-        files={"animation": anim_path.read_bytes()},  # noqa: ASYNC240
+        files={"animation": (anim_path.name, anim_path.read_bytes(), "video/mp4")},  # noqa: ASYNC240
     )
     if response.status_code == 200:
         return response.json()["result"]["message_id"]
@@ -381,7 +381,9 @@ async def publish_post(
         # Send overflow messages for non-text posts
         if msg_id and overflow:
             for text in overflow:
-                await _send_message(client, config, text)
+                last_id = await _send_message(client, config, text)
+                if last_id:
+                    msg_id = last_id
 
     if msg_id:
         logger.info("Published post %s to Telegram (message_id=%d)", post["reddit_id"], msg_id)
