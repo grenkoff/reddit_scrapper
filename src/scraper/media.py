@@ -37,11 +37,18 @@ def _convert_gif_to_mp4(gif_path: Path) -> Path:
         mp4_path = gif_path.with_suffix(".mp4")
         subprocess.run(
             [
-                ffmpeg, "-y", "-i", str(gif_path),
-                "-movflags", "+faststart",
-                "-pix_fmt", "yuv420p",
-                "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-                "-an", str(mp4_path),
+                ffmpeg,
+                "-y",
+                "-i",
+                str(gif_path),
+                "-movflags",
+                "+faststart",
+                "-pix_fmt",
+                "yuv420p",
+                "-vf",
+                "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                "-an",
+                str(mp4_path),
             ],
             capture_output=True,
             check=True,
