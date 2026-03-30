@@ -1,3 +1,4 @@
+import asyncio
 import html as _html
 import logging
 from datetime import UTC, datetime
@@ -88,8 +89,8 @@ async def fetch_top_posts(config: Config) -> list[dict]:
     posts = []
     for child in children:
         d = child["data"]
-        if d.get("removed_by_category") or d.get("selftext") == "[removed]":
-            logger.debug("Skipping removed post %s", d.get("id"))
+        if d.get("removed_by_category") or d.get("author") == "[deleted]" or d.get("selftext") == "[removed]":
+            logger.debug("Skipping removed/deleted post %s", d.get("id"))
             continue
         posts.append(_parse_post(d))
     logger.info("Fetched %d posts from Reddit", len(posts))
@@ -109,8 +110,15 @@ async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list
 
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            response = await client.get(url, params=params, headers=headers)
-            response.raise_for_status()
+            for attempt in range(3):
+                response = await client.get(url, params=params, headers=headers)
+                if response.status_code == 403 and attempt < 2:
+                    delay = (attempt + 1) * 5
+                    logger.info("Reddit 403 for comments %s, retrying in %ds", reddit_id, delay)
+                    await asyncio.sleep(delay)
+                    continue
+                response.raise_for_status()
+                break
 
         data = response.json()
         if not isinstance(data, list) or len(data) < 2:
