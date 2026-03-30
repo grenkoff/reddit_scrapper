@@ -107,29 +107,43 @@ def _build_media_texts(post: dict, config: Config) -> tuple[str, list[str]]:
     if len(full) <= MAX_CAPTION_LEN:
         return full, []
 
-    # Caption gets title + as much selftext as fits
+    # Caption budget is smaller (MAX_CAPTION_LEN) than overflow messages (MAX_MESSAGE_LEN).
     caption_budget = MAX_CAPTION_LEN - len(title_block)
     if caption_budget <= 0:
         return title_html[:MAX_CAPTION_LEN], _chunk_text_evenly(selftext_html, footer)
 
-    if len(selftext_html) <= caption_budget:
+    # Figure out minimum number of messages (1 caption + N overflow) and split evenly.
+    total_text = len(selftext_html) + len(footer_block)
+    n_overflow = math.ceil((total_text - caption_budget) / MAX_MESSAGE_LEN) if total_text > caption_budget else 0
+    n_total = 1 + n_overflow
+
+    # Target size per message — selftext portion only (title/footer handled separately)
+    target = math.ceil(len(selftext_html) / n_total)
+    # Caption portion must not exceed budget
+    caption_target = min(target, caption_budget)
+
+    # Split selftext at word boundary near caption_target
+    if len(selftext_html) <= caption_target:
         caption_text = selftext_html
         remaining = ""
     else:
-        split = selftext_html.rfind(" ", 0, caption_budget)
+        split = selftext_html.rfind(" ", 0, caption_target)
         if split == -1:
-            split = caption_budget
+            split = caption_target
         caption_text = selftext_html[:split]
         remaining = selftext_html[split:].lstrip()
 
     caption = f"{title_block}{caption_text}"
 
     if not remaining:
+        with_footer = f"{caption}{footer_block}"
+        if len(with_footer) <= MAX_CAPTION_LEN:
+            return with_footer, []
         return caption, [footer]
 
-    # Split remaining evenly across messages, footer on last
+    # Split remaining evenly across overflow messages, footer on last
     messages = _chunk_text_evenly(remaining, footer)
-    return caption, messages
+    return f"{caption}...", messages
 
 
 def _chunk_text_evenly(body: str, footer: str) -> list[str]:
@@ -137,24 +151,25 @@ def _chunk_text_evenly(body: str, footer: str) -> list[str]:
     footer_block = f"\n\n{footer}"
     total = body + footer_block
     if len(total) <= MAX_MESSAGE_LEN:
-        return [total]
+        return [f"\U0000261d\n...{total}"]
 
     # How many chunks do we need?
     n = math.ceil((len(body) + len(footer_block)) / MAX_MESSAGE_LEN)
-    chunk_size = math.ceil(len(body) / n)
 
     chunks = []
     remaining = body
-    while remaining:
-        if len(remaining) + len(footer_block) <= MAX_MESSAGE_LEN or len(remaining) <= chunk_size:
-            chunks.append(remaining + footer_block)
-            remaining = ""
-        else:
-            split = remaining.rfind(" ", 0, chunk_size)
-            if split == -1:
-                split = chunk_size
-            chunks.append(remaining[:split])
-            remaining = remaining[split:].lstrip()
+    for i in range(n):
+        chunks_left = n - i
+        is_last = chunks_left == 1
+        if is_last:
+            chunks.append(f"\U0000261d\n...{remaining}{footer_block}")
+            break
+        target = math.ceil(len(remaining) / chunks_left)
+        split = remaining.rfind(" ", 0, target)
+        if split == -1:
+            split = target
+        chunks.append(f"\U0000261d\n...{remaining[:split]}...")
+        remaining = remaining[split:].lstrip()
 
     return chunks
 
@@ -379,7 +394,7 @@ async def publish_post(
             msg_id = await _send_message(client, config, caption)
 
         # Send overflow messages for non-text posts
-        if msg_id and overflow:
+        if msg_id and overflow and post_type != "text":
             for text in overflow:
                 last_id = await _send_message(client, config, text)
                 if last_id:
@@ -435,7 +450,7 @@ _MEDIA_URL_RE = re.compile(
     re.IGNORECASE,
 )
 # Reddit inline gif/image: ![gif](giphy|ID) or ![img](emote|ID)
-_REDDIT_INLINE_RE = re.compile(r"!\[(?:gif|img)\]\(giphy\|([a-zA-Z0-9_-]+)\)")
+_REDDIT_INLINE_RE = re.compile(r"!\[(?:gif|img)\]\(giphy\|([a-zA-Z0-9_-]+)(?:\|[^)]*)?\)")
 
 
 def _extract_media_url(body: str) -> tuple[str | None, str, str | None]:
