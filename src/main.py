@@ -77,11 +77,13 @@ async def scrape_new_posts(config) -> None:
 async def _publish_comments_delayed(config, post: dict, msg_id: int) -> None:
     """Fetch top comments and publish them in discussion group over 10 minutes."""
     try:
-        # Wait a moment for Telegram to auto-forward the post to discussion group
-        await asyncio.sleep(3)
-
-        # Find the auto-forwarded message in discussion group
-        discussion_msg_id = await get_discussion_message_id(config, msg_id)
+        # Wait for Telegram to auto-forward the post to discussion group, retry if not found
+        discussion_msg_id = None
+        for attempt in range(4):
+            await asyncio.sleep(3 * (attempt + 1))
+            discussion_msg_id = await get_discussion_message_id(config, msg_id)
+            if discussion_msg_id:
+                break
         if not discussion_msg_id:
             logger.warning("Could not find discussion message for post %s", post["reddit_id"])
             return
