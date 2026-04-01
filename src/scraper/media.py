@@ -121,7 +121,7 @@ async def download_video_direct(url: str, hls_url: str | None = None) -> Path | 
                 output_template = str(TMP_DIR / "%(id)s.%(ext)s")
                 ydl_opts = {
                     "outtmpl": output_template,
-                    "format": "bestvideo+bestaudio/best",
+                    "format": "bestvideo[filesize<40M]+bestaudio/best[filesize<40M]/bestvideo+bestaudio/best",
                     "merge_output_format": "mp4",
                     "quiet": True,
                     "no_warnings": True,
@@ -160,7 +160,7 @@ def download_video(url: str) -> Path | None:
         output_template = str(TMP_DIR / "%(id)s.%(ext)s")
         ydl_opts = {
             "outtmpl": output_template,
-            "format": "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best",
+            "format": "bestvideo[ext=mp4][filesize<40M]+bestaudio/best[ext=mp4][filesize<40M]/best",
             "merge_output_format": "mp4",
             "quiet": True,
             "no_warnings": True,
