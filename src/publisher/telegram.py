@@ -64,7 +64,9 @@ def _md_to_telegram_html(text: str) -> str:
     result = re.sub(r"^#{1,6}\s+(.+)$", r"<b>\1</b>", result, flags=re.MULTILINE)
     # Collapse redundant blank lines (with optional whitespace) into single blank line
     result = re.sub(r"(\n[ \t]*){2,}", "\n\n", result)
-    return result
+    # Strip leading/trailing whitespace so concatenation with title/footer
+    # doesn't accumulate extra blank lines.
+    return result.strip()
 
 
 def _build_footer(post: dict, config: Config) -> str:
