@@ -196,28 +196,43 @@ def _get_duration(ffmpeg_bin: str, path: Path) -> float | None:
     return None
 
 
-def compress_video(path: Path, max_mb: int = 49) -> Path:
-    """Add faststart flag; re-encode and shrink if file exceeds max_mb."""
+def compress_video(path: Path, max_mb: int = 49) -> Path | None:
+    """Add faststart flag; re-encode and shrink if file exceeds max_mb.
+
+    Returns None if the video cannot be brought under max_mb after all attempts.
+    """
     ffmpeg = _get_ffmpeg()
     if not ffmpeg:
         return path
 
     try:
         TMP_DIR.mkdir(exist_ok=True)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4", dir=TMP_DIR) as out_f:
-            out_path = Path(out_f.name)
-
         size_mb = path.stat().st_size / (1024 * 1024)
 
         if size_mb <= max_mb:
-            cmd = [ffmpeg, "-y", "-i", str(path), "-c", "copy", "-movflags", "+faststart", str(out_path)]
-        else:
-            duration = _get_duration(ffmpeg, path)
-            if duration and duration > 0:
-                audio_kbps = 128
-                target_kbps = max(int(max_mb * 8 * 1024 / duration) - audio_kbps, 200)
-            else:
-                target_kbps = 800
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4", dir=TMP_DIR) as out_f:
+                out_path = Path(out_f.name)
+            subprocess.run(
+                [ffmpeg, "-y", "-i", str(path), "-c", "copy", "-movflags", "+faststart", str(out_path)],
+                capture_output=True,
+                check=True,
+            )
+            path.unlink(missing_ok=True)
+            logger.info("Video faststart: %.1f MB", out_path.stat().st_size / (1024 * 1024))
+            return out_path
+
+        duration = _get_duration(ffmpeg, path)
+        if not duration or duration <= 0:
+            logger.warning("Cannot determine video duration, skipping video: %s", path)
+            path.unlink(missing_ok=True)
+            return None
+
+        audio_kbps = 96
+        # Try three progressively lower bitrates (100%, 70%, 50% of theoretical target)
+        for scale in [1.0, 0.7, 0.5]:
+            target_kbps = max(int((max_mb * 8 * 1024 / duration) * scale) - audio_kbps, 150)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4", dir=TMP_DIR) as out_f:
+                out_path = Path(out_f.name)
             cmd = [
                 ffmpeg,
                 "-y",
@@ -228,7 +243,7 @@ def compress_video(path: Path, max_mb: int = 49) -> Path:
                 "-b:v",
                 f"{target_kbps}k",
                 "-maxrate",
-                f"{target_kbps}k",
+                f"{int(target_kbps * 1.2)}k",
                 "-bufsize",
                 f"{target_kbps * 2}k",
                 "-preset",
@@ -238,17 +253,24 @@ def compress_video(path: Path, max_mb: int = 49) -> Path:
                 "-c:a",
                 "aac",
                 "-b:a",
-                "128k",
+                f"{audio_kbps}k",
                 str(out_path),
             ]
+            subprocess.run(cmd, capture_output=True, check=True)
+            out_mb = out_path.stat().st_size / (1024 * 1024)
+            logger.info("Video compress (scale=%.1f): %.1f MB → %.1f MB", scale, size_mb, out_mb)
+            if out_mb <= max_mb:
+                path.unlink(missing_ok=True)
+                return out_path
+            out_path.unlink(missing_ok=True)
 
-        subprocess.run(cmd, capture_output=True, check=True)
+        logger.warning("Video still too large after all compression attempts (%.1f MB), skipping", size_mb)
         path.unlink(missing_ok=True)
-        logger.info("Video compressed: %.1f MB → %.1f MB", size_mb, out_path.stat().st_size / (1024 * 1024))
-        return out_path
+        return None
     except Exception:
-        logger.warning("Video compression failed, using original: %s", path, exc_info=True)
-        return path
+        logger.warning("Video compression failed: %s", path, exc_info=True)
+        path.unlink(missing_ok=True)
+        return None
 
 
 def cleanup(path: Path) -> None:
