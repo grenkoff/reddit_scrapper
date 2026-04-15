@@ -115,11 +115,14 @@ async def _publish_comments_delayed(config, post: dict, msg_id: int) -> None:
         logger.warning("Failed to publish comments for %s", post["reddit_id"], exc_info=True)
 
 
-async def publish_one(config) -> bool:
-    """Pick the next unpublished post and publish it. Returns True if published."""
+async def publish_one(config) -> bool | None:
+    """Pick the next unpublished post and publish it.
+
+    Returns True if published, False if skipped (publish failed), None if queue is empty.
+    """
     posts = await get_unpublished_posts(limit=1)
     if not posts:
-        return False
+        return None
 
     post = posts[0]
     media_path = None
@@ -136,7 +139,7 @@ async def publish_one(config) -> bool:
         if media_path is None:
             logger.warning("Skipping video post %s: too large to compress", post["reddit_id"])
             await mark_as_published(post["reddit_id"], 0)
-            return False
+            return False  # skipped
     elif post["post_type"] == "gallery" and post.get("media_urls"):
         paths = [await download_image(url) for url in post["media_urls"]]
         media_paths = [p for p in paths if p is not None] or None
@@ -147,7 +150,7 @@ async def publish_one(config) -> bool:
         if media_path is None:
             logger.warning("Skipping link-video post %s: too large to compress", post["reddit_id"])
             await mark_as_published(post["reddit_id"], 0)
-            return False
+            return False  # skipped
 
     try:
         msg_id = await publish_post(config, post, media_path=media_path, media_paths=media_paths)
@@ -168,7 +171,7 @@ async def publish_one(config) -> bool:
         for p in media_paths:
             cleanup(p)
 
-    return bool(msg_id)
+    return bool(msg_id)  # True=published, False=skipped
 
 
 async def main() -> None:
@@ -199,10 +202,10 @@ async def main() -> None:
             await scrape_new_posts(config)
             last_scrape = time.monotonic()
 
-        # Publish one post
         # Publish one post (with timeout to prevent hanging on media download)
+        result = None
         try:
-            await asyncio.wait_for(publish_one(config), timeout=300)
+            result = await asyncio.wait_for(publish_one(config), timeout=300)
         except TimeoutError:
             logger.warning("publish_one timed out after 5 minutes")
             posts = await get_unpublished_posts(limit=1)
@@ -210,9 +213,11 @@ async def main() -> None:
                 logger.warning("Skipping post %s due to timeout", posts[0]["reddit_id"])
                 await mark_as_published(posts[0]["reddit_id"], 0)
 
-        # Wait before next publish tick
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(stop_event.wait(), timeout=config.pause_between_posts)
+        # Wait only after a successful publish or when the queue is empty.
+        # After a skip (result is False) go straight to the next post.
+        if result is not False:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop_event.wait(), timeout=config.pause_between_posts)
 
     logger.info("Bot stopped")
 
