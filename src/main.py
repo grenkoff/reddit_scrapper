@@ -158,6 +158,9 @@ async def publish_one(config) -> bool:
     if msg_id:
         await mark_as_published(post["reddit_id"], msg_id)
         asyncio.create_task(_publish_comments_delayed(config, post, msg_id))
+    else:
+        logger.warning("Skipping post %s: publish failed", post["reddit_id"])
+        await mark_as_published(post["reddit_id"], 0)
 
     if media_path:
         cleanup(media_path)
@@ -202,6 +205,10 @@ async def main() -> None:
             await asyncio.wait_for(publish_one(config), timeout=300)
         except TimeoutError:
             logger.warning("publish_one timed out after 5 minutes")
+            posts = await get_unpublished_posts(limit=1)
+            if posts:
+                logger.warning("Skipping post %s due to timeout", posts[0]["reddit_id"])
+                await mark_as_published(posts[0]["reddit_id"], 0)
 
         # Wait before next publish tick
         with contextlib.suppress(TimeoutError):
