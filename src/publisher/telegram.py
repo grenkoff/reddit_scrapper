@@ -1,4 +1,5 @@
 import html as _html
+import io
 import json
 import logging
 import math
@@ -7,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+from PIL import Image
 
 from src.config import Config
 
@@ -16,6 +18,21 @@ TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 MAX_CAPTION_LEN = 1024
 MAX_MESSAGE_LEN = 4096
 MEDIA_GROUP_MAX = 10
+TELEGRAM_MAX_PIXEL_SUM = 10000
+
+
+def _fit_photo_for_telegram(photo_bytes: bytes) -> bytes:
+    """Scale down image so that width + height <= 10000 (Telegram limit)."""
+    img = Image.open(io.BytesIO(photo_bytes))
+    w, h = img.size
+    if w + h <= TELEGRAM_MAX_PIXEL_SUM:
+        return photo_bytes
+    scale = TELEGRAM_MAX_PIXEL_SUM / (w + h)
+    new_size = (int(w * scale), int(h * scale))
+    img = img.resize(new_size, Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
 
 
 def _api_url(token: str, method: str) -> str:
@@ -177,18 +194,29 @@ def _chunk_text_evenly(body: str, footer: str) -> list[str]:
 
 
 async def _send_photo(client: httpx.AsyncClient, config: Config, caption: str, photo_path: Path) -> int | None:
+    photo_bytes = photo_path.read_bytes()  # noqa: ASYNC240
+    data = {
+        "chat_id": config.telegram_chat_id,
+        "caption": caption[:MAX_CAPTION_LEN],
+        "parse_mode": "HTML",
+        "disable_web_page_preview": "true",
+    }
     response = await client.post(
         _api_url(config.telegram_bot_token, "sendPhoto"),
-        data={
-            "chat_id": config.telegram_chat_id,
-            "caption": caption[:MAX_CAPTION_LEN],
-            "parse_mode": "HTML",
-            "disable_web_page_preview": "true",
-        },
-        files={"photo": photo_path.read_bytes()},  # noqa: ASYNC240
+        data=data,
+        files={"photo": photo_bytes},
     )
     if response.status_code == 200:
         return response.json()["result"]["message_id"]
+    if "PHOTO_INVALID_DIMENSIONS" in response.text:
+        resized = _fit_photo_for_telegram(photo_bytes)
+        response = await client.post(
+            _api_url(config.telegram_bot_token, "sendPhoto"),
+            data=data,
+            files={"photo": resized},
+        )
+        if response.status_code == 200:
+            return response.json()["result"]["message_id"]
     logger.warning("sendPhoto failed: %s", response.text)
     return None
 
