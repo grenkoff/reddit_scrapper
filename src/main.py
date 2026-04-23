@@ -130,27 +130,39 @@ async def publish_one(config) -> bool | None:
 
     if post["post_type"] == "image" and post.get("content_url"):
         media_path = await download_image(post["content_url"])
+        if media_path is None:
+            logger.warning("Skipping image post %s: failed to download", post["reddit_id"])
+            await mark_as_published(post["reddit_id"], 0)
+            return False
     elif post["post_type"] == "gif" and post.get("content_url"):
         media_path = await download_gif(post["content_url"])
+        if media_path is None:
+            logger.warning("Skipping gif post %s: failed to download", post["reddit_id"])
+            await mark_as_published(post["reddit_id"], 0)
+            return False
     elif post["post_type"] == "video" and post.get("video_url"):
         media_path = await download_video_direct(post["video_url"], hls_url=post.get("hls_url"))
         if media_path:
             media_path = await asyncio.get_event_loop().run_in_executor(None, compress_video, media_path)
         if media_path is None:
-            logger.warning("Skipping video post %s: too large to compress", post["reddit_id"])
+            logger.warning("Skipping video post %s: failed to download or compress", post["reddit_id"])
             await mark_as_published(post["reddit_id"], 0)
-            return False  # skipped
+            return False
     elif post["post_type"] == "gallery" and post.get("media_urls"):
         paths = [await download_image(url) for url in post["media_urls"]]
         media_paths = [p for p in paths if p is not None] or None
+        if media_paths is None:
+            logger.warning("Skipping gallery post %s: failed to download any images", post["reddit_id"])
+            await mark_as_published(post["reddit_id"], 0)
+            return False
     elif post["post_type"] == "link" and post.get("content_url") and _is_video_url(post["content_url"]):
         media_path = await asyncio.get_event_loop().run_in_executor(None, download_video, post["content_url"])
         if media_path:
             media_path = await asyncio.get_event_loop().run_in_executor(None, compress_video, media_path)
         if media_path is None:
-            logger.warning("Skipping link-video post %s: too large to compress", post["reddit_id"])
+            logger.warning("Skipping link-video post %s: failed to download or compress", post["reddit_id"])
             await mark_as_published(post["reddit_id"], 0)
-            return False  # skipped
+            return False
 
     try:
         msg_id = await publish_post(config, post, media_path=media_path, media_paths=media_paths)
