@@ -404,12 +404,6 @@ async def publish_post(
     async with httpx.AsyncClient(timeout=None) as client:
         if post_type == "image" and media_path:
             msg_id = await _send_photo(client, config, caption, media_path)
-            if not msg_id:
-                preview_url = post.get("preview_url") or post.get("content_url")
-                if preview_url:
-                    msg_id = await _send_photo_url(client, config, caption, preview_url)
-            if not msg_id:
-                msg_id = await _send_message(client, config, caption)
         elif post_type == "video" and media_path:
             msg_id = await _send_video(client, config, caption, media_path)
         elif post_type == "gif" and media_path:
