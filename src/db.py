@@ -1,22 +1,21 @@
-import contextlib
 import json
 import logging
 from datetime import UTC, datetime
-from pathlib import Path
 
-import aiosqlite
+import asyncpg
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path("data/reddit_scrapper.db")
+_pool: asyncpg.Pool | None = None
 
 
-async def init_db() -> None:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
+async def init_db(database_url: str) -> None:
+    global _pool
+    _pool = await asyncpg.create_pool(database_url, min_size=1, max_size=5)
+    async with _pool.acquire() as conn:
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS posts (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                id              SERIAL PRIMARY KEY,
                 reddit_id       TEXT UNIQUE NOT NULL,
                 subreddit       TEXT NOT NULL,
                 title           TEXT NOT NULL,
@@ -27,86 +26,82 @@ async def init_db() -> None:
                 score           INTEGER NOT NULL DEFAULT 0,
                 num_comments    INTEGER NOT NULL DEFAULT 0,
                 post_type       TEXT NOT NULL,
-                is_nsfw         BOOLEAN NOT NULL DEFAULT 0,
+                is_nsfw         BOOLEAN NOT NULL DEFAULT FALSE,
                 media_urls      TEXT,
-                created_utc     DATETIME NOT NULL,
-                scraped_at      DATETIME NOT NULL,
-                published_to_tg BOOLEAN NOT NULL DEFAULT 0,
-                published_at    DATETIME,
-                tg_message_id   INTEGER
+                created_utc     TIMESTAMPTZ NOT NULL,
+                scraped_at      TIMESTAMPTZ NOT NULL,
+                published_to_tg BOOLEAN NOT NULL DEFAULT FALSE,
+                published_at    TIMESTAMPTZ,
+                tg_message_id   INTEGER,
+                preview_url     TEXT,
+                video_url       TEXT,
+                hls_url         TEXT
             )
         """)
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS scrape_logs (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                started_at      DATETIME NOT NULL,
-                finished_at     DATETIME,
+                id              SERIAL PRIMARY KEY,
+                started_at      TIMESTAMPTZ NOT NULL,
+                finished_at     TIMESTAMPTZ,
                 posts_found     INTEGER NOT NULL DEFAULT 0,
                 posts_new       INTEGER NOT NULL DEFAULT 0,
                 posts_published INTEGER NOT NULL DEFAULT 0,
                 error           TEXT
             )
         """)
-        await db.commit()
-        with contextlib.suppress(Exception):
-            await db.execute("ALTER TABLE posts ADD COLUMN preview_url TEXT")
-            await db.commit()
-        with contextlib.suppress(Exception):
-            await db.execute("ALTER TABLE posts ADD COLUMN video_url TEXT")
-            await db.commit()
-        with contextlib.suppress(Exception):
-            await db.execute("ALTER TABLE posts ADD COLUMN hls_url TEXT")
-            await db.commit()
     logger.info("Database initialized")
 
 
+async def close_db() -> None:
+    global _pool
+    if _pool:
+        await _pool.close()
+        _pool = None
+
+
 async def is_post_exists(reddit_id: str) -> bool:
-    query = "SELECT 1 FROM posts WHERE reddit_id = ?"
-    async with aiosqlite.connect(DB_PATH) as db, db.execute(query, (reddit_id,)) as cursor:
-        return await cursor.fetchone() is not None
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT 1 FROM posts WHERE reddit_id = $1", reddit_id)
+        return row is not None
 
 
 async def insert_post(post: dict) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
+    async with _pool.acquire() as conn:
+        await conn.execute(
             """
-            INSERT OR IGNORE INTO posts
+            INSERT INTO posts
                 (reddit_id, subreddit, title, author, url, content_url, selftext,
                  score, num_comments, post_type, is_nsfw, media_urls,
                  created_utc, scraped_at, preview_url, video_url, hls_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            ON CONFLICT (reddit_id) DO NOTHING
             """,
-            (
-                post["reddit_id"],
-                post["subreddit"],
-                post["title"],
-                post["author"],
-                post["url"],
-                post.get("content_url"),
-                post.get("selftext"),
-                post["score"],
-                post["num_comments"],
-                post["post_type"],
-                post["is_nsfw"],
-                json.dumps(post["media_urls"]) if post.get("media_urls") else None,
-                post["created_utc"],
-                datetime.now(UTC).isoformat(),
-                post.get("preview_url"),
-                post.get("video_url"),
-                post.get("hls_url"),
-            ),
+            post["reddit_id"],
+            post["subreddit"],
+            post["title"],
+            post["author"],
+            post["url"],
+            post.get("content_url"),
+            post.get("selftext"),
+            post["score"],
+            post["num_comments"],
+            post["post_type"],
+            post["is_nsfw"],
+            json.dumps(post["media_urls"]) if post.get("media_urls") else None,
+            post["created_utc"],
+            datetime.now(UTC).isoformat(),
+            post.get("preview_url"),
+            post.get("video_url"),
+            post.get("hls_url"),
         )
-        await db.commit()
 
 
 async def get_unpublished_posts(limit: int | None = None) -> list[dict]:
-    query = "SELECT * FROM posts WHERE published_to_tg = 0 ORDER BY score DESC"
+    query = "SELECT * FROM posts WHERE published_to_tg = FALSE ORDER BY score DESC"
     if limit:
         query += f" LIMIT {limit}"
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(query) as cursor:
-            rows = await cursor.fetchall()
+    async with _pool.acquire() as conn:
+        rows = await conn.fetch(query)
     posts = [dict(row) for row in rows]
     for post in posts:
         if post["media_urls"]:
@@ -115,12 +110,13 @@ async def get_unpublished_posts(limit: int | None = None) -> list[dict]:
 
 
 async def mark_as_published(reddit_id: str, tg_message_id: int) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE posts SET published_to_tg = 1, published_at = ?, tg_message_id = ? WHERE reddit_id = ?",
-            (datetime.now(UTC).isoformat(), tg_message_id, reddit_id),
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE posts SET published_to_tg = TRUE, published_at = $1, tg_message_id = $2 WHERE reddit_id = $3",
+            datetime.now(UTC).isoformat(),
+            tg_message_id,
+            reddit_id,
         )
-        await db.commit()
 
 
 async def log_scrape(
@@ -131,12 +127,16 @@ async def log_scrape(
     posts_published: int,
     error: str | None = None,
 ) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
+    async with _pool.acquire() as conn:
+        await conn.execute(
             """
             INSERT INTO scrape_logs (started_at, finished_at, posts_found, posts_new, posts_published, error)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES ($1, $2, $3, $4, $5, $6)
             """,
-            (started_at.isoformat(), finished_at.isoformat(), posts_found, posts_new, posts_published, error),
+            started_at.isoformat(),
+            finished_at.isoformat(),
+            posts_found,
+            posts_new,
+            posts_published,
+            error,
         )
-        await db.commit()
