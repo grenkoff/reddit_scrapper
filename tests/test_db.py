@@ -49,9 +49,7 @@ async def test_insert_and_exists():
     pool, conn = _make_pool(fetchrow_return={"1": 1})
     with patch.object(db_module, "_pool", pool):
         assert await is_post_exists("t3_abc123") is True
-        conn.fetchrow.assert_awaited_once_with(
-            "SELECT 1 FROM posts WHERE reddit_id = $1", "t3_abc123"
-        )
+        conn.fetchrow.assert_awaited_once_with("SELECT 1 FROM posts WHERE reddit_id = $1", "t3_abc123")
 
 
 async def test_not_exists():
