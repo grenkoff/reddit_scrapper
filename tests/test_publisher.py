@@ -4,7 +4,12 @@ from httpx import Response
 from src.config import Config
 from src.publisher.telegram import _build_media_texts, publish_post
 
-CONFIG = Config(telegram_bot_token="testtoken", telegram_chat_id="-100123456", database_url="postgresql://test", pause_between_posts=0)
+CONFIG = Config(
+    telegram_bot_token="testtoken",
+    telegram_chat_id="-100123456",
+    database_url="postgresql://test",
+    pause_between_posts=0,
+)
 
 BASE_POST = {
     "reddit_id": "t3_abc123",

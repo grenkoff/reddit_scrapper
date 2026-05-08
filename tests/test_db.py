@@ -1,9 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 import src.db as db_module
-from src.db import get_unpublished_posts, insert_post, is_post_exists, mark_as_published
+from src.db import insert_post, is_post_exists, mark_as_published
 
 SAMPLE_POST = {
     "reddit_id": "t3_abc123",
