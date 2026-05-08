@@ -10,7 +10,7 @@ from src.scraper.reddit import _detect_post_type, _extract_media_urls, _parse_po
 FIXTURE = json.loads((Path("tests/fixtures/reddit_top.json")).read_text())
 POSTS_DATA = [child["data"] for child in FIXTURE["data"]["children"]]
 
-CONFIG = Config(telegram_bot_token="test", telegram_chat_id="test")
+CONFIG = Config(telegram_bot_token="test", telegram_chat_id="test", database_url="postgresql://test")
 
 
 @respx.mock

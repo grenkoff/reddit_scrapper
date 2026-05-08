@@ -10,6 +10,7 @@ import httpx
 
 from src.config import load_config
 from src.db import (
+    close_db,
     get_unpublished_posts,
     init_db,
     insert_post,
@@ -188,7 +189,7 @@ async def publish_one(config) -> bool | None:
 
 async def main() -> None:
     config = load_config()
-    await init_db()
+    await init_db(config.database_url)
 
     stop_event = asyncio.Event()
 
@@ -232,6 +233,7 @@ async def main() -> None:
                 await asyncio.wait_for(stop_event.wait(), timeout=config.pause_between_posts)
 
     logger.info("Bot stopped")
+    await close_db()
 
 
 if __name__ == "__main__":
