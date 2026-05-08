@@ -88,8 +88,8 @@ async def insert_post(post: dict) -> None:
             post["post_type"],
             post["is_nsfw"],
             json.dumps(post["media_urls"]) if post.get("media_urls") else None,
-            post["created_utc"],
-            datetime.now(UTC).isoformat(),
+            datetime.fromisoformat(post["created_utc"]),
+            datetime.now(UTC),
             post.get("preview_url"),
             post.get("video_url"),
             post.get("hls_url"),
@@ -113,7 +113,7 @@ async def mark_as_published(reddit_id: str, tg_message_id: int) -> None:
     async with _pool.acquire() as conn:
         await conn.execute(
             "UPDATE posts SET published_to_tg = TRUE, published_at = $1, tg_message_id = $2 WHERE reddit_id = $3",
-            datetime.now(UTC).isoformat(),
+            datetime.now(UTC),
             tg_message_id,
             reddit_id,
         )
@@ -133,8 +133,8 @@ async def log_scrape(
             INSERT INTO scrape_logs (started_at, finished_at, posts_found, posts_new, posts_published, error)
             VALUES ($1, $2, $3, $4, $5, $6)
             """,
-            started_at.isoformat(),
-            finished_at.isoformat(),
+            started_at,
+            finished_at,
             posts_found,
             posts_new,
             posts_published,
