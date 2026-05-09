@@ -101,7 +101,7 @@ def _build_footer(post: dict, config: Config) -> str:
 
     if config.gemini_api_key and config.bot_username:
         ai_url = f"https://t.me/{config.bot_username}?startapp={post['reddit_id']}"
-        parts.append(f'<a href="{ai_url}">AI-объяснение -></a>')
+        parts.append(f'<a href="{ai_url}">AI-explanation -></a>')
 
     if config.telegram_channel_link:
         parts.append(f'<a href="{config.telegram_channel_link}">Лучшее Reddit -></a>')
