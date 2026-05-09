@@ -1,8 +1,20 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: reddit_scrapper
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   bot:
     build: .
     restart: unless-stopped
-    env_file: .env
+    env_file: .env.local
+    depends_on: [postgres]
     volumes:
-      - ./data:/app/data
       - ./tmp:/app/tmp
+
+volumes:
+  postgres_data:

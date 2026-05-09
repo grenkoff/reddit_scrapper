@@ -193,7 +193,9 @@ def _chunk_text_evenly(body: str, footer: str) -> list[str]:
     return chunks
 
 
-async def _send_photo(client: httpx.AsyncClient, config: Config, caption: str, photo_path: Path) -> int | None:
+async def _send_photo(
+    client: httpx.AsyncClient, config: Config, caption: str, photo_path: Path, *, reply_markup: str | None = None
+) -> int | None:
     photo_bytes = photo_path.read_bytes()  # noqa: ASYNC240
     data = {
         "chat_id": config.telegram_chat_id,
@@ -201,6 +203,8 @@ async def _send_photo(client: httpx.AsyncClient, config: Config, caption: str, p
         "parse_mode": "HTML",
         "disable_web_page_preview": "true",
     }
+    if reply_markup:
+        data["reply_markup"] = reply_markup
     response = await client.post(
         _api_url(config.telegram_bot_token, "sendPhoto"),
         data=data,
@@ -238,16 +242,21 @@ async def _send_photo_url(client: httpx.AsyncClient, config: Config, caption: st
     return None
 
 
-async def _send_video(client: httpx.AsyncClient, config: Config, caption: str, video_path: Path) -> int | None:
+async def _send_video(
+    client: httpx.AsyncClient, config: Config, caption: str, video_path: Path, *, reply_markup: str | None = None
+) -> int | None:
+    data = {
+        "chat_id": config.telegram_chat_id,
+        "caption": caption[:MAX_CAPTION_LEN],
+        "parse_mode": "HTML",
+        "disable_web_page_preview": "true",
+        "supports_streaming": "true",
+    }
+    if reply_markup:
+        data["reply_markup"] = reply_markup
     response = await client.post(
         _api_url(config.telegram_bot_token, "sendVideo"),
-        data={
-            "chat_id": config.telegram_chat_id,
-            "caption": caption[:MAX_CAPTION_LEN],
-            "parse_mode": "HTML",
-            "disable_web_page_preview": "true",
-            "supports_streaming": "true",
-        },
+        data=data,
         files={"video": video_path.read_bytes()},  # noqa: ASYNC240
     )
     if response.status_code == 200:
@@ -256,15 +265,20 @@ async def _send_video(client: httpx.AsyncClient, config: Config, caption: str, v
     return None
 
 
-async def _send_animation(client: httpx.AsyncClient, config: Config, caption: str, anim_path: Path) -> int | None:
+async def _send_animation(
+    client: httpx.AsyncClient, config: Config, caption: str, anim_path: Path, *, reply_markup: str | None = None
+) -> int | None:
+    data = {
+        "chat_id": config.telegram_chat_id,
+        "caption": caption[:MAX_CAPTION_LEN],
+        "parse_mode": "HTML",
+        "disable_web_page_preview": "true",
+    }
+    if reply_markup:
+        data["reply_markup"] = reply_markup
     response = await client.post(
         _api_url(config.telegram_bot_token, "sendAnimation"),
-        data={
-            "chat_id": config.telegram_chat_id,
-            "caption": caption[:MAX_CAPTION_LEN],
-            "parse_mode": "HTML",
-            "disable_web_page_preview": "true",
-        },
+        data=data,
         files={"animation": (anim_path.name, anim_path.read_bytes(), "video/mp4")},  # noqa: ASYNC240
     )
     if response.status_code == 200:
@@ -273,15 +287,27 @@ async def _send_animation(client: httpx.AsyncClient, config: Config, caption: st
     return None
 
 
-async def _send_message(client: httpx.AsyncClient, config: Config, text: str) -> int | None:
+async def _send_message(
+    client: httpx.AsyncClient,
+    config: Config,
+    text: str,
+    *,
+    reply_markup: str | None = None,
+    reply_to: int | None = None,
+) -> int | None:
+    data: dict = {
+        "chat_id": config.telegram_chat_id,
+        "text": text[:MAX_MESSAGE_LEN],
+        "parse_mode": "HTML",
+        "disable_web_page_preview": "true",
+    }
+    if reply_markup:
+        data["reply_markup"] = reply_markup
+    if reply_to:
+        data["reply_to_message_id"] = reply_to
     response = await client.post(
         _api_url(config.telegram_bot_token, "sendMessage"),
-        data={
-            "chat_id": config.telegram_chat_id,
-            "text": text[:MAX_MESSAGE_LEN],
-            "parse_mode": "HTML",
-            "disable_web_page_preview": "true",
-        },
+        data=data,
     )
     if response.status_code == 200:
         return response.json()["result"]["message_id"]
@@ -319,6 +345,8 @@ async def _publish_text_messages(
     client: httpx.AsyncClient,
     config: Config,
     post: dict,
+    *,
+    reply_markup: str | None = None,
 ) -> int | None:
     title_html = f"<b>{_html.escape(post['title'])}</b>"
     selftext_raw = post.get("selftext") or ""
@@ -328,7 +356,7 @@ async def _publish_text_messages(
     selftext_html = _md_to_telegram_html(selftext_raw)
     body = f"{title_html}\n\n{selftext_html}" if selftext_html else title_html
     if len(f"{body}\n\n{footer}") <= MAX_MESSAGE_LEN:
-        return await _send_message(client, config, f"{body}\n\n{footer}")
+        return await _send_message(client, config, f"{body}\n\n{footer}", reply_markup=reply_markup)
 
     # Too long: split RAW text first, then convert each chunk individually.
     # Splitting already-converted HTML would cut tags in half → invalid HTML.
@@ -354,7 +382,8 @@ async def _publish_text_messages(
         text = f"{title_html}\n\n{chunk_html}" if i == 0 else chunk_html
         if i == len(raw_chunks) - 1:
             text += f"\n\n{footer}"
-        msg_id = await _send_message(client, config, text)
+        is_last = i == len(raw_chunks) - 1
+        msg_id = await _send_message(client, config, text, reply_markup=reply_markup if is_last else None)
     return msg_id
 
 
@@ -379,9 +408,11 @@ async def _publish_link(
     post: dict,
     caption: str,
     media_path: Path | None = None,
+    *,
+    reply_markup: str | None = None,
 ) -> int | None:
     if media_path:
-        return await _send_video(client, config, caption, media_path)
+        return await _send_video(client, config, caption, media_path, reply_markup=reply_markup)
 
     preview_url = post.get("preview_url")
     if preview_url:
@@ -389,7 +420,11 @@ async def _publish_link(
         if msg_id:
             return msg_id
 
-    return await _send_message(client, config, caption)
+    return await _send_message(client, config, caption, reply_markup=reply_markup)
+
+
+def _make_explain_keyboard(reddit_id: str) -> str:
+    return json.dumps({"inline_keyboard": [[{"text": "🤖 Объяснить", "callback_data": f"explain:{reddit_id}"}]]})
 
 
 async def publish_post(
@@ -400,22 +435,26 @@ async def publish_post(
 ) -> int | None:
     caption, overflow = _build_media_texts(post, config)
     post_type = post["post_type"]
+    reply_markup = _make_explain_keyboard(post["reddit_id"]) if config.gemini_api_key else None
 
     async with httpx.AsyncClient(timeout=None) as client:
         if post_type == "image" and media_path:
-            msg_id = await _send_photo(client, config, caption, media_path)
+            msg_id = await _send_photo(client, config, caption, media_path, reply_markup=reply_markup)
         elif post_type == "video" and media_path:
-            msg_id = await _send_video(client, config, caption, media_path)
+            msg_id = await _send_video(client, config, caption, media_path, reply_markup=reply_markup)
         elif post_type == "gif" and media_path:
-            msg_id = await _send_animation(client, config, caption, media_path)
+            msg_id = await _send_animation(client, config, caption, media_path, reply_markup=reply_markup)
         elif post_type == "gallery" and media_paths:
             msg_id = await _publish_gallery(client, config, post, media_paths, caption)
+            # sendMediaGroup doesn't support reply_markup — send button as follow-up
+            if msg_id and reply_markup:
+                await _send_message(client, config, "‎", reply_markup=reply_markup, reply_to=msg_id)
         elif post_type == "text":
-            msg_id = await _publish_text_messages(client, config, post)
+            msg_id = await _publish_text_messages(client, config, post, reply_markup=reply_markup)
         elif post_type == "link":
-            msg_id = await _publish_link(client, config, post, caption, media_path)
+            msg_id = await _publish_link(client, config, post, caption, media_path, reply_markup=reply_markup)
         else:
-            msg_id = await _send_message(client, config, caption)
+            msg_id = await _send_message(client, config, caption, reply_markup=reply_markup)
 
         # Send overflow messages for non-text posts
         if msg_id and overflow and post_type != "text":
@@ -430,40 +469,6 @@ async def publish_post(
         logger.warning("Failed to publish post %s", post["reddit_id"])
 
     return msg_id
-
-
-async def get_discussion_message_id(config: Config, channel_msg_id: int) -> int | None:
-    """Find the auto-forwarded message ID in the discussion group."""
-    async with httpx.AsyncClient(timeout=10) as client:
-        # Get linked discussion group chat_id
-        response = await client.get(
-            _api_url(config.telegram_bot_token, "getChat"),
-            params={"chat_id": config.telegram_chat_id},
-        )
-        if response.status_code != 200:
-            return None
-        linked_chat_id = response.json().get("result", {}).get("linked_chat_id")
-        if not linked_chat_id:
-            return None
-
-        # Poll getUpdates to find the auto-forwarded message
-        response = await client.get(
-            _api_url(config.telegram_bot_token, "getUpdates"),
-            params={"offset": -20, "limit": 20},
-        )
-        if response.status_code != 200:
-            return None
-
-        for update in response.json().get("result", []):
-            msg = update.get("message", {})
-            if (
-                msg.get("is_automatic_forward")
-                and msg.get("chat", {}).get("id") == linked_chat_id
-                and msg.get("forward_from_message_id") == channel_msg_id
-            ):
-                return msg["message_id"]
-
-    return None
 
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
