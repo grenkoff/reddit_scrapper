@@ -20,12 +20,15 @@ class Config:
     telegram_bot_token: str
     telegram_chat_id: str
     database_url: str
+    gemini_api_key: str | None = None
     reddit_user_agent: str = "reddit-scrapper/0.1 (by u/your_username)"
     scrape_interval: int = 1200  # seconds (20 minutes)
     posts_limit: int = 50
     skip_nsfw: bool = True
     pause_between_posts: float = 3.0  # seconds
     telegram_channel_link: str = ""
+    bot_username: str | None = None  # Set at startup via getMe
+    webapp_port: int = 8080
 
 
 def load_config() -> Config:
@@ -45,10 +48,12 @@ def load_config() -> Config:
         telegram_bot_token=token,
         telegram_chat_id=chat_id,
         database_url=database_url,
+        gemini_api_key=os.getenv("GEMINI_API_KEY") or None,
         reddit_user_agent=os.getenv("REDDIT_USER_AGENT", "reddit-scrapper/0.1 (by u/your_username)"),
         scrape_interval=int(os.getenv("SCRAPE_INTERVAL", "1200")),
         posts_limit=int(os.getenv("POSTS_LIMIT", "50")),
         skip_nsfw=os.getenv("SKIP_NSFW", "true").lower() == "true",
         pause_between_posts=float(os.getenv("PAUSE_BETWEEN_POSTS", "3.0")),
         telegram_channel_link=os.getenv("TELEGRAM_CHANNEL_LINK", ""),
+        webapp_port=int(os.getenv("PORT", os.getenv("WEBAPP_PORT", "8080"))),
     )

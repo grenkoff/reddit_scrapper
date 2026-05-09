@@ -18,7 +18,8 @@ from src.db import (
     log_scrape,
     mark_as_published,
 )
-from src.publisher.telegram import get_discussion_message_id, publish_comment, publish_post
+from src.publisher.poller import UpdatePoller
+from src.publisher.telegram import publish_comment, publish_post
 from src.scraper.media import (
     cleanup,
     compress_video,
@@ -28,6 +29,7 @@ from src.scraper.media import (
     download_video_direct,
 )
 from src.scraper.reddit import fetch_top_comments, fetch_top_posts
+from src.webapp.server import start_webapp_task
 
 logging.basicConfig(
     level=logging.INFO,
@@ -75,16 +77,10 @@ async def scrape_new_posts(config) -> None:
         )
 
 
-async def _publish_comments_delayed(config, post: dict, msg_id: int) -> None:
+async def _publish_comments_delayed(config, poller: "UpdatePoller", post: dict, msg_id: int) -> None:
     """Fetch top comments and publish them in discussion group over 10 minutes."""
     try:
-        # Wait for Telegram to auto-forward the post to discussion group, retry if not found
-        discussion_msg_id = None
-        for attempt in range(4):
-            await asyncio.sleep(3 * (attempt + 1))
-            discussion_msg_id = await get_discussion_message_id(config, msg_id)
-            if discussion_msg_id:
-                break
+        discussion_msg_id = await poller.wait_for_discussion_id(msg_id, wait_seconds=30.0)
         if not discussion_msg_id:
             logger.warning("Could not find discussion message for post %s", post["reddit_id"])
             return
@@ -116,7 +112,7 @@ async def _publish_comments_delayed(config, post: dict, msg_id: int) -> None:
         logger.warning("Failed to publish comments for %s", post["reddit_id"], exc_info=True)
 
 
-async def publish_one(config) -> bool | None:
+async def publish_one(config, poller: "UpdatePoller") -> bool | None:
     """Pick the next unpublished post and publish it.
 
     Returns True if published, False if skipped (publish failed), None if queue is empty.
@@ -173,7 +169,8 @@ async def publish_one(config) -> bool | None:
 
     if msg_id:
         await mark_as_published(post["reddit_id"], msg_id)
-        asyncio.create_task(_publish_comments_delayed(config, post, msg_id))
+        poller.register_post(msg_id, post)
+        asyncio.create_task(_publish_comments_delayed(config, poller, post, msg_id))
     else:
         logger.warning("Skipping post %s: publish failed", post["reddit_id"])
         await mark_as_published(post["reddit_id"], 0)
@@ -187,9 +184,23 @@ async def publish_one(config) -> bool | None:
     return bool(msg_id)  # True=published, False=skipped
 
 
+async def _fetch_bot_username(token: str) -> str | None:
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            response = await client.get(f"https://api.telegram.org/bot{token}/getMe")
+            if response.status_code == 200:
+                return response.json()["result"].get("username")
+        except Exception:
+            logger.warning("Failed to fetch bot username", exc_info=True)
+    return None
+
+
 async def main() -> None:
     config = load_config()
     await init_db(config.database_url)
+
+    config.bot_username = await _fetch_bot_username(config.telegram_bot_token)
+    logger.info("Bot username: %s", config.bot_username)
 
     stop_event = asyncio.Event()
 
@@ -200,6 +211,13 @@ async def main() -> None:
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _handle_signal)
+
+    poller = UpdatePoller(config)
+    asyncio.create_task(poller.run(stop_event))
+
+    if config.gemini_api_key:
+        start_webapp_task(config)
+        logger.info("Web app started on port %d", config.webapp_port)
 
     logger.info(
         "Bot started — publish every %.0fs, scrape every %ds", config.pause_between_posts, config.scrape_interval
@@ -218,7 +236,7 @@ async def main() -> None:
         # Publish one post (with timeout to prevent hanging on media download)
         result = None
         try:
-            result = await asyncio.wait_for(publish_one(config), timeout=300)
+            result = await asyncio.wait_for(publish_one(config, poller), timeout=300)
         except TimeoutError:
             logger.warning("publish_one timed out after 5 minutes")
             posts = await get_unpublished_posts(limit=1)

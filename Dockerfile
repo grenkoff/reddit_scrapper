@@ -9,4 +9,6 @@ RUN pip install --no-cache-dir .
 COPY . .
 RUN mkdir -p data tmp
 
+EXPOSE 8080
+
 CMD ["python", "-m", "src.main"]

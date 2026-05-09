@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 from datetime import UTC, datetime
@@ -49,6 +50,8 @@ async def init_db(database_url: str) -> None:
                 error           TEXT
             )
         """)
+        with contextlib.suppress(Exception):
+            await conn.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS ai_explanation TEXT")
     logger.info("Database initialized")
 
 
@@ -139,4 +142,30 @@ async def log_scrape(
             posts_new,
             posts_published,
             error,
+        )
+
+
+async def get_post(reddit_id: str) -> dict | None:
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM posts WHERE reddit_id = $1", reddit_id)
+        if not row:
+            return None
+        post = dict(row)
+        if post.get("media_urls"):
+            post["media_urls"] = json.loads(post["media_urls"])
+        return post
+
+
+async def get_explanation(reddit_id: str) -> str | None:
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT ai_explanation FROM posts WHERE reddit_id = $1", reddit_id)
+        return row["ai_explanation"] if row else None
+
+
+async def save_explanation(reddit_id: str, explanation: str) -> None:
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE posts SET ai_explanation = $1 WHERE reddit_id = $2",
+            explanation,
+            reddit_id,
         )
