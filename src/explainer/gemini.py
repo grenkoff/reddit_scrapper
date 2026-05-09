@@ -51,15 +51,21 @@ async def generate_explanation(config: Config, post: dict) -> str:
     payload = {
         "system_instruction": {"parts": [{"text": _SYSTEM_PROMPT}]},
         "contents": [{"role": "user", "parts": _build_parts(post)}],
-        "generationConfig": {"maxOutputTokens": 600, "temperature": 0.4},
+        "generationConfig": {
+            "maxOutputTokens": 1024,
+            "temperature": 0.4,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
     }
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={config.gemini_api_key}"
+        f"gemini-2.5-flash:generateContent?key={config.gemini_api_key}"
     )
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(url, json=payload)
-        response.raise_for_status()
+        if response.status_code != 200:
+            logger.warning("Gemini HTTP %s: %s", response.status_code, response.text)
+            response.raise_for_status()
 
     data = response.json()
     try:

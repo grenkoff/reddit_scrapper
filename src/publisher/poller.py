@@ -100,9 +100,6 @@ class UpdatePoller:
         if not data.startswith(_CALLBACK_PREFIX):
             return
 
-        # Answer immediately to remove spinner
-        await client.post(self._api("answerCallbackQuery"), data={"callback_query_id": callback_id})
-
         reddit_id = data[len(_CALLBACK_PREFIX) :]
         channel_msg_id = cb["message"]["message_id"]
         chat_id = cb["message"]["chat"]["id"]
@@ -110,26 +107,38 @@ class UpdatePoller:
         # Check DB cache first
         cached = await get_explanation(reddit_id)
         if cached:
+            await client.post(self._api("answerCallbackQuery"), data={"callback_query_id": callback_id})
             await self._send_explanation(client, chat_id, channel_msg_id, cached)
             return
 
-        # Find post context (in-memory or fallback to DB fields)
+        # Find post context
         post = self._post_context.get(reddit_id)
         if post is None:
-            await self._send_explanation(client, chat_id, channel_msg_id, "Данные о посте недоступны.")
+            await client.post(
+                self._api("answerCallbackQuery"),
+                data={"callback_query_id": callback_id, "text": "Данные о посте недоступны.", "show_alert": "true"},
+            )
             return
 
         try:
             explanation = await generate_explanation(self._config, post)
-        except Exception:
-            logger.warning("Gemini error for %s", reddit_id, exc_info=True)
-            await self._send_explanation(client, chat_id, channel_msg_id, "Не удалось сгенерировать объяснение.")
+        except Exception as e:
+            logger.warning("Gemini error for %s: %s", reddit_id, e)
+            await client.post(
+                self._api("answerCallbackQuery"),
+                data={
+                    "callback_query_id": callback_id,
+                    "text": "Не удалось сгенерировать объяснение. Попробуйте позже.",
+                    "show_alert": "true",
+                },
+            )
             return
 
+        await client.post(self._api("answerCallbackQuery"), data={"callback_query_id": callback_id})
         await save_explanation(reddit_id, explanation)
         await self._send_explanation(client, chat_id, channel_msg_id, explanation)
 
-        # Remove the button after first use
+        # Remove the button after successful explanation
         await client.post(
             self._api("editMessageReplyMarkup"),
             json={"chat_id": chat_id, "message_id": channel_msg_id, "reply_markup": {"inline_keyboard": []}},

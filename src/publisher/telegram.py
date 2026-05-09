@@ -225,16 +225,21 @@ async def _send_photo(
     return None
 
 
-async def _send_photo_url(client: httpx.AsyncClient, config: Config, caption: str, photo_url: str) -> int | None:
+async def _send_photo_url(
+    client: httpx.AsyncClient, config: Config, caption: str, photo_url: str, *, reply_markup: str | None = None
+) -> int | None:
+    data = {
+        "chat_id": config.telegram_chat_id,
+        "photo": photo_url,
+        "caption": caption[:MAX_CAPTION_LEN],
+        "parse_mode": "HTML",
+        "disable_web_page_preview": "true",
+    }
+    if reply_markup:
+        data["reply_markup"] = reply_markup
     response = await client.post(
         _api_url(config.telegram_bot_token, "sendPhoto"),
-        data={
-            "chat_id": config.telegram_chat_id,
-            "photo": photo_url,
-            "caption": caption[:MAX_CAPTION_LEN],
-            "parse_mode": "HTML",
-            "disable_web_page_preview": "true",
-        },
+        data=data,
     )
     if response.status_code == 200:
         return response.json()["result"]["message_id"]
@@ -416,7 +421,7 @@ async def _publish_link(
 
     preview_url = post.get("preview_url")
     if preview_url:
-        msg_id = await _send_photo_url(client, config, caption, preview_url)
+        msg_id = await _send_photo_url(client, config, caption, preview_url, reply_markup=reply_markup)
         if msg_id:
             return msg_id
 

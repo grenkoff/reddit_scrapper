@@ -15,6 +15,7 @@ services:
     depends_on: [postgres]
     volumes:
       - ./tmp:/app/tmp
+      - ./src:/app/src
 
 volumes:
   postgres_data:

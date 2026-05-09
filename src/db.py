@@ -50,8 +50,8 @@ async def init_db(database_url: str) -> None:
                 error           TEXT
             )
         """)
-    with contextlib.suppress(Exception):
-        await conn.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS ai_explanation TEXT")
+        with contextlib.suppress(Exception):
+            await conn.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS ai_explanation TEXT")
     logger.info("Database initialized")
 
 
