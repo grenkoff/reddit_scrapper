@@ -1,5 +1,7 @@
 import base64
+import json
 import logging
+from collections.abc import AsyncIterator
 
 import httpx
 
@@ -44,8 +46,8 @@ def _build_parts(post: dict) -> list[dict]:
     return [text_part]
 
 
-async def generate_explanation(config: Config, post: dict) -> str:
-    payload = {
+def _build_payload(post: dict) -> dict:
+    return {
         "system_instruction": {"parts": [{"text": _SYSTEM_PROMPT}]},
         "contents": [{"role": "user", "parts": _build_parts(post)}],
         "generationConfig": {
@@ -54,12 +56,15 @@ async def generate_explanation(config: Config, post: dict) -> str:
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
+
+
+async def generate_explanation(config: Config, post: dict) -> str:
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"gemini-2.5-flash:generateContent?key={config.gemini_api_key}"
     )
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(url, json=payload)
+        response = await client.post(url, json=_build_payload(post))
         if response.status_code != 200:
             logger.warning("Gemini HTTP %s: %s", response.status_code, response.text)
             response.raise_for_status()
@@ -70,3 +75,31 @@ async def generate_explanation(config: Config, post: dict) -> str:
     except (KeyError, IndexError):
         logger.warning("Unexpected Gemini response: %s", data)
         return "Не удалось сгенерировать объяснение."
+
+
+async def stream_explanation(config: Config, post: dict) -> AsyncIterator[str]:
+    """Stream explanation chunks from Gemini SSE endpoint."""
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-2.5-flash:streamGenerateContent?alt=sse&key={config.gemini_api_key}"
+    )
+    async with (
+        httpx.AsyncClient(timeout=60) as client,
+        client.stream("POST", url, json=_build_payload(post)) as response,
+    ):
+        if response.status_code != 200:
+            body = await response.aread()
+            logger.warning("Gemini HTTP %s: %s", response.status_code, body.decode())
+            response.raise_for_status()
+
+        async for line in response.aiter_lines():
+            if not line.startswith("data: "):
+                continue
+            payload = line[6:]
+            try:
+                data = json.loads(payload)
+                text = data["candidates"][0]["content"]["parts"][0]["text"]
+            except (json.JSONDecodeError, KeyError, IndexError):
+                continue
+            if text:
+                yield text
