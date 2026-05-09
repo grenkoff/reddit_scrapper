@@ -145,6 +145,17 @@ async def log_scrape(
         )
 
 
+async def get_post(reddit_id: str) -> dict | None:
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM posts WHERE reddit_id = $1", reddit_id)
+        if not row:
+            return None
+        post = dict(row)
+        if post.get("media_urls"):
+            post["media_urls"] = json.loads(post["media_urls"])
+        return post
+
+
 async def get_explanation(reddit_id: str) -> str | None:
     async with _pool.acquire() as conn:
         row = await conn.fetchrow("SELECT ai_explanation FROM posts WHERE reddit_id = $1", reddit_id)

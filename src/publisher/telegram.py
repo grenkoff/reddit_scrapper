@@ -98,8 +98,13 @@ def _build_footer(post: dict, config: Config) -> str:
             reddit_link = f"{reddit_link} : : {external_link}"
 
     parts = [reddit_link]
+
+    if config.gemini_api_key and config.bot_username:
+        ai_url = f"https://t.me/{config.bot_username}?startapp={post['reddit_id']}"
+        parts.append(f'<a href="{ai_url}">🤖 AI-объяснение -></a>')
+
     if config.telegram_channel_link:
-        parts.append(f'\n<a href="{config.telegram_channel_link}">Лучшее Reddit -></a>')
+        parts.append(f'<a href="{config.telegram_channel_link}">Лучшее Reddit -></a>')
 
     return "\n".join(parts)
 
@@ -428,10 +433,6 @@ async def _publish_link(
     return await _send_message(client, config, caption, reply_markup=reply_markup)
 
 
-def _make_explain_keyboard(reddit_id: str) -> str:
-    return json.dumps({"inline_keyboard": [[{"text": "🤖 Объяснить", "callback_data": f"explain:{reddit_id}"}]]})
-
-
 async def publish_post(
     config: Config,
     post: dict,
@@ -440,26 +441,22 @@ async def publish_post(
 ) -> int | None:
     caption, overflow = _build_media_texts(post, config)
     post_type = post["post_type"]
-    reply_markup = _make_explain_keyboard(post["reddit_id"]) if config.gemini_api_key else None
 
     async with httpx.AsyncClient(timeout=None) as client:
         if post_type == "image" and media_path:
-            msg_id = await _send_photo(client, config, caption, media_path, reply_markup=reply_markup)
+            msg_id = await _send_photo(client, config, caption, media_path)
         elif post_type == "video" and media_path:
-            msg_id = await _send_video(client, config, caption, media_path, reply_markup=reply_markup)
+            msg_id = await _send_video(client, config, caption, media_path)
         elif post_type == "gif" and media_path:
-            msg_id = await _send_animation(client, config, caption, media_path, reply_markup=reply_markup)
+            msg_id = await _send_animation(client, config, caption, media_path)
         elif post_type == "gallery" and media_paths:
             msg_id = await _publish_gallery(client, config, post, media_paths, caption)
-            # sendMediaGroup doesn't support reply_markup — send button as follow-up
-            if msg_id and reply_markup:
-                await _send_message(client, config, "‎", reply_markup=reply_markup, reply_to=msg_id)
         elif post_type == "text":
-            msg_id = await _publish_text_messages(client, config, post, reply_markup=reply_markup)
+            msg_id = await _publish_text_messages(client, config, post)
         elif post_type == "link":
-            msg_id = await _publish_link(client, config, post, caption, media_path, reply_markup=reply_markup)
+            msg_id = await _publish_link(client, config, post, caption, media_path)
         else:
-            msg_id = await _send_message(client, config, caption, reply_markup=reply_markup)
+            msg_id = await _send_message(client, config, caption)
 
         # Send overflow messages for non-text posts
         if msg_id and overflow and post_type != "text":

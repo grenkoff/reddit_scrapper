@@ -27,6 +27,8 @@ class Config:
     skip_nsfw: bool = True
     pause_between_posts: float = 3.0  # seconds
     telegram_channel_link: str = ""
+    bot_username: str | None = None  # Set at startup via getMe
+    webapp_port: int = 8080
 
 
 def load_config() -> Config:
@@ -53,4 +55,5 @@ def load_config() -> Config:
         skip_nsfw=os.getenv("SKIP_NSFW", "true").lower() == "true",
         pause_between_posts=float(os.getenv("PAUSE_BETWEEN_POSTS", "3.0")),
         telegram_channel_link=os.getenv("TELEGRAM_CHANNEL_LINK", ""),
+        webapp_port=int(os.getenv("PORT", os.getenv("WEBAPP_PORT", "8080"))),
     )

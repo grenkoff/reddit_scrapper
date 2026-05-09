@@ -29,6 +29,7 @@ from src.scraper.media import (
     download_video_direct,
 )
 from src.scraper.reddit import fetch_top_comments, fetch_top_posts
+from src.webapp.server import start_webapp_task
 
 logging.basicConfig(
     level=logging.INFO,
@@ -183,9 +184,23 @@ async def publish_one(config, poller: "UpdatePoller") -> bool | None:
     return bool(msg_id)  # True=published, False=skipped
 
 
+async def _fetch_bot_username(token: str) -> str | None:
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            response = await client.get(f"https://api.telegram.org/bot{token}/getMe")
+            if response.status_code == 200:
+                return response.json()["result"].get("username")
+        except Exception:
+            logger.warning("Failed to fetch bot username", exc_info=True)
+    return None
+
+
 async def main() -> None:
     config = load_config()
     await init_db(config.database_url)
+
+    config.bot_username = await _fetch_bot_username(config.telegram_bot_token)
+    logger.info("Bot username: %s", config.bot_username)
 
     stop_event = asyncio.Event()
 
@@ -199,6 +214,10 @@ async def main() -> None:
 
     poller = UpdatePoller(config)
     asyncio.create_task(poller.run(stop_event))
+
+    if config.gemini_api_key:
+        start_webapp_task(config)
+        logger.info("Web app started on port %d", config.webapp_port)
 
     logger.info(
         "Bot started — publish every %.0fs, scrape every %ds", config.pause_between_posts, config.scrape_interval
