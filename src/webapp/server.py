@@ -1,13 +1,14 @@
 import asyncio
+import json
 import logging
 
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from src.config import Config
 from src.db import get_explanation, get_post, save_explanation
-from src.explainer.gemini import generate_explanation
+from src.explainer.gemini import stream_explanation
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ _MINI_APP_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI-объяснение</title>
+<title>AI-explanation</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   body {
@@ -48,6 +49,15 @@ _MINI_APP_HTML = """<!DOCTYPE html>
     100% { background-position: -200% 0; }
   }
   .explanation { white-space: pre-wrap; }
+  .cursor::after {
+    content: '▍';
+    animation: blink 1s infinite;
+    opacity: 0.5;
+    margin-left: 2px;
+  }
+  @keyframes blink {
+    50% { opacity: 0; }
+  }
   .error { color: var(--tg-theme-destructive-text-color, #e74c3c); padding: 16px 0; }
 </style>
 </head>
@@ -59,7 +69,7 @@ _MINI_APP_HTML = """<!DOCTYPE html>
     <div class="shimmer"></div>
     <div class="shimmer short"></div>
   </div>
-  <div id="content" class="explanation" style="display:none;"></div>
+  <div id="content" class="explanation cursor" style="display:none;"></div>
   <div id="error" class="error" style="display:none;"></div>
 </div>
 <script>
@@ -71,27 +81,45 @@ _MINI_APP_HTML = """<!DOCTYPE html>
 
   function showError(msg) {
     document.getElementById('loading').style.display = 'none';
+    document.getElementById('content').style.display = 'none';
     const err = document.getElementById('error');
     err.textContent = msg;
     err.style.display = 'block';
   }
 
+  function startStreaming(redditId) {
+    const loading = document.getElementById('loading');
+    const content = document.getElementById('content');
+    const evt = new EventSource('/api/explain/stream?reddit_id=' + encodeURIComponent(redditId));
+    let started = false;
+
+    evt.addEventListener('chunk', (e) => {
+      if (!started) {
+        loading.style.display = 'none';
+        content.style.display = 'block';
+        started = true;
+      }
+      content.textContent += JSON.parse(e.data);
+    });
+    evt.addEventListener('done', () => {
+      content.classList.remove('cursor');
+      evt.close();
+    });
+    evt.addEventListener('error', (e) => {
+      evt.close();
+      if (!started) {
+        const msg = e.data ? JSON.parse(e.data) : 'Не удалось сгенерировать объяснение.';
+        showError(msg);
+      } else {
+        content.classList.remove('cursor');
+      }
+    });
+  }
+
   if (!startParam) {
     showError('Параметр поста не указан.');
   } else {
-    fetch('/api/explain?reddit_id=' + encodeURIComponent(startParam))
-      .then(r => r.json())
-      .then(data => {
-        document.getElementById('loading').style.display = 'none';
-        if (data.error) {
-          showError(data.error);
-        } else {
-          const c = document.getElementById('content');
-          c.textContent = data.explanation;
-          c.style.display = 'block';
-        }
-      })
-      .catch(e => showError('Ошибка сети: ' + e));
+    startStreaming(startParam);
   }
 </script>
 </body>
@@ -110,27 +138,49 @@ def create_app(config: Config) -> FastAPI:
     async def health() -> dict:
         return {"ok": True}
 
+    @app.get("/api/explain/stream")
+    async def explain_stream(reddit_id: str):
+        def sse(event: str, data: str) -> str:
+            return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+        async def event_stream():
+            cached = await get_explanation(reddit_id)
+            if cached:
+                yield sse("chunk", cached)
+                yield sse("done", "")
+                return
+
+            if not config.gemini_api_key:
+                yield sse("error", "AI не настроен.")
+                return
+
+            post = await get_post(reddit_id)
+            if not post:
+                yield sse("error", "Пост не найден.")
+                return
+
+            full_text = ""
+            try:
+                async for chunk in stream_explanation(config, post):
+                    full_text += chunk
+                    yield sse("chunk", chunk)
+            except Exception as e:
+                logger.warning("Gemini stream error for %s: %s", reddit_id, e)
+                yield sse("error", "Не удалось сгенерировать объяснение.")
+                return
+
+            if full_text.strip():
+                await save_explanation(reddit_id, full_text.strip())
+            yield sse("done", "")
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
     @app.get("/api/explain")
     async def explain(reddit_id: str) -> JSONResponse:
         cached = await get_explanation(reddit_id)
         if cached:
             return JSONResponse({"explanation": cached, "cached": True})
-
-        if not config.gemini_api_key:
-            return JSONResponse({"error": "AI не настроен."})
-
-        post = await get_post(reddit_id)
-        if not post:
-            return JSONResponse({"error": "Пост не найден."})
-
-        try:
-            explanation = await generate_explanation(config, post)
-        except Exception as e:
-            logger.warning("Gemini error for %s: %s", reddit_id, e)
-            return JSONResponse({"error": "Не удалось сгенерировать объяснение."})
-
-        await save_explanation(reddit_id, explanation)
-        return JSONResponse({"explanation": explanation, "cached": False})
+        return JSONResponse({"error": "Use /api/explain/stream to generate"})
 
     return app
 
