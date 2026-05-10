@@ -9,12 +9,54 @@ from src.config import Config
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT = """\
-Ты объясняешь Reddit-посты русскоязычным читателям.
-Дай краткое объяснение сути поста: 2-4 предложения, простым языком.
-Если для понимания нужен культурный или интернет-контекст — кратко упомяни его.
-Пиши только на русском, без заголовков и списков.\
-"""
+_SYSTEM_PROMPT = (
+    "Ты помогаешь русскоязычным читателям понять Reddit-посты на английском.\n"
+    "\n"
+    "Структура ответа (строго в этом порядке, разделы — пустой строкой):\n"
+    "\n"
+    "1) Простое объяснение\n"
+    "30-50 слов общими словами, без сложных терминов и интернет-сленга. "
+    "Если для понимания нужен культурный контекст — кратко упомяни. "
+    'Без заголовка "Простое объяснение", сразу текст.\n'
+    "\n"
+    "2) Заголовок\n"
+    'Сначала строка "Заголовок:", потом оригинал на английском с новой строки, '
+    "потом перевод с новой строки.\n"
+    "\n"
+    '3) Текст поста (только если в данных есть поле "Текст:")\n'
+    'Строка "Текст:". Затем разбей текст на предложения. Для каждого предложения: '
+    "оригинал на английском с новой строки, перевод с новой строки, "
+    "пустая строка между блоками.\n"
+    "\n"
+    "4) Текст с картинки (только если на картинке/гифе есть надписи)\n"
+    'Если одна картинка: строка "На картинке написано:", дальше оригинал и перевод '
+    "(каждая надпись — отдельным блоком).\n"
+    'Если несколько картинок (комикс): "На картинке 1 написано:", '
+    '"На картинке 2 написано:" и т.д.\n'
+    "Если на картинке нет текста — раздел пропустить целиком.\n"
+    "\n"
+    "Пиши только на русском (кроме оригинальных английских строк). "
+    "Без markdown форматирования, без звёздочек, без эмодзи."
+)
+
+
+def _fetch_image(url: str) -> dict | None:
+    try:
+        resp = httpx.get(url, timeout=10, follow_redirects=True)
+        resp.raise_for_status()
+        b64 = base64.b64encode(resp.content).decode()
+        mime = "image/jpeg"
+        url_lower = url.lower()
+        if url_lower.endswith(".png"):
+            mime = "image/png"
+        elif url_lower.endswith(".webp"):
+            mime = "image/webp"
+        elif url_lower.endswith(".gif"):
+            mime = "image/gif"
+        return {"inline_data": {"mime_type": mime, "data": b64}}
+    except Exception:
+        logger.debug("Could not fetch image %s", url)
+        return None
 
 
 def _build_parts(post: dict) -> list[dict]:
@@ -24,26 +66,24 @@ def _build_parts(post: dict) -> list[dict]:
         f"Тип поста: {post['post_type']}",
     ]
     if post.get("selftext"):
-        lines.append(f"Текст: {post['selftext'][:1000]}")
+        lines.append(f"Текст: {post['selftext'][:2000]}")
     lines.append(f"Оценка: {post['score']} upvotes, {post['num_comments']} комментариев")
     text_part = {"text": "\n".join(lines)}
 
-    image_url = post.get("preview_url") or (post.get("content_url") if post.get("post_type") == "image" else None)
-    if image_url:
-        try:
-            resp = httpx.get(image_url, timeout=10, follow_redirects=True)
-            resp.raise_for_status()
-            b64 = base64.b64encode(resp.content).decode()
-            mime = "image/jpeg"
-            if image_url.lower().endswith(".png"):
-                mime = "image/png"
-            elif image_url.lower().endswith(".webp"):
-                mime = "image/webp"
-            return [{"inline_data": {"mime_type": mime, "data": b64}}, text_part]
-        except Exception:
-            logger.debug("Could not fetch image for Gemini, falling back to text only")
+    image_parts: list[dict] = []
+    if post.get("post_type") == "gallery" and post.get("media_urls"):
+        for url in post["media_urls"][:10]:
+            part = _fetch_image(url)
+            if part:
+                image_parts.append(part)
+    else:
+        image_url = post.get("preview_url") or (post.get("content_url") if post.get("post_type") == "image" else None)
+        if image_url:
+            part = _fetch_image(image_url)
+            if part:
+                image_parts.append(part)
 
-    return [text_part]
+    return [*image_parts, text_part]
 
 
 def _build_payload(post: dict) -> dict:
@@ -51,7 +91,7 @@ def _build_payload(post: dict) -> dict:
         "system_instruction": {"parts": [{"text": _SYSTEM_PROMPT}]},
         "contents": [{"role": "user", "parts": _build_parts(post)}],
         "generationConfig": {
-            "maxOutputTokens": 1024,
+            "maxOutputTokens": 2048,
             "temperature": 0.4,
             "thinkingConfig": {"thinkingBudget": 0},
         },
