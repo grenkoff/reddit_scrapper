@@ -49,6 +49,14 @@ _MINI_APP_HTML = """<!DOCTYPE html>
     100% { background-position: -200% 0; }
   }
   .explanation { white-space: pre-wrap; }
+  .explanation blockquote {
+    margin: 4px 0;
+    padding-left: 10px;
+    border-left: 3px solid var(--tg-theme-hint-color, #cccccc);
+    color: var(--tg-theme-hint-color, #707579);
+    display: inline-block;
+  }
+  .explanation strong { font-weight: 600; }
   .cursor::after {
     content: '▍';
     animation: blink 1s infinite;
@@ -87,11 +95,38 @@ _MINI_APP_HTML = """<!DOCTYPE html>
     err.style.display = 'block';
   }
 
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function renderMarkdown(text) {
+    const lines = text.split('\\n');
+    const out = lines.map((line) => {
+      // Blockquote (line starts with `> `)
+      let isQuote = false;
+      if (line.startsWith('> ')) {
+        isQuote = true;
+        line = line.slice(2);
+      } else if (line === '>') {
+        isQuote = true;
+        line = '';
+      }
+      let html = escapeHtml(line);
+      // Bold: **text**
+      html = html.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
+      // Italic: *text*
+      html = html.replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
+      return isQuote ? '<blockquote>' + html + '</blockquote>' : html;
+    });
+    return out.join('\\n');
+  }
+
   function startStreaming(redditId) {
     const loading = document.getElementById('loading');
     const content = document.getElementById('content');
     const evt = new EventSource('/api/explain/stream?reddit_id=' + encodeURIComponent(redditId));
     let started = false;
+    let buffer = '';
 
     evt.addEventListener('chunk', (e) => {
       if (!started) {
@@ -99,7 +134,8 @@ _MINI_APP_HTML = """<!DOCTYPE html>
         content.style.display = 'block';
         started = true;
       }
-      content.textContent += JSON.parse(e.data);
+      buffer += JSON.parse(e.data);
+      content.innerHTML = renderMarkdown(buffer);
     });
     evt.addEventListener('done', () => {
       content.classList.remove('cursor');
