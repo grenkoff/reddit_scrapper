@@ -67,7 +67,9 @@ class UpdatePoller:
     def _handle_message(self, msg: dict) -> None:
         if not msg.get("is_automatic_forward"):
             return
-        channel_msg_id = msg.get("forward_from_message_id")
+        # Bot API 7.0+ moved forward fields into forward_origin.
+        # Older API still has forward_from_message_id at top level.
+        channel_msg_id = msg.get("forward_from_message_id") or msg.get("forward_origin", {}).get("message_id")
         discussion_msg_id = msg.get("message_id")
         if not channel_msg_id or not discussion_msg_id:
             return
