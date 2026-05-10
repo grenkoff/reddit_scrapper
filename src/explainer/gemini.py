@@ -61,7 +61,7 @@ def _build_payload(post: dict) -> dict:
 async def generate_explanation(config: Config, post: dict) -> str:
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.5-flash:generateContent?key={config.gemini_api_key}"
+        f"gemini-3.1-flash-lite:generateContent?key={config.gemini_api_key}"
     )
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(url, json=_build_payload(post))
@@ -81,7 +81,7 @@ async def stream_explanation(config: Config, post: dict) -> AsyncIterator[str]:
     """Stream explanation chunks from Gemini SSE endpoint."""
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.5-flash:streamGenerateContent?alt=sse&key={config.gemini_api_key}"
+        f"gemini-3.1-flash-lite:streamGenerateContent?alt=sse&key={config.gemini_api_key}"
     )
     async with (
         httpx.AsyncClient(timeout=60) as client,
