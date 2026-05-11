@@ -406,6 +406,10 @@ async def _publish_gallery(
 ) -> int | None:
     groups = [media_paths[i : i + MEDIA_GROUP_MAX] for i in range(0, len(media_paths), MEDIA_GROUP_MAX)]
 
+    # sendMediaGroup requires 2-10 items. If trailing group has 1 item, steal one from the previous group.
+    if len(groups) > 1 and len(groups[-1]) == 1:
+        groups[-1].insert(0, groups[-2].pop())
+
     for group in groups[:-1]:
         await _send_media_group(client, config, group, caption=None)
 
