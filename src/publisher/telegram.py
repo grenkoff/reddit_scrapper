@@ -1,3 +1,4 @@
+import asyncio
 import html as _html
 import io
 import json
@@ -340,13 +341,20 @@ async def _send_media_group(
             entry["parse_mode"] = "HTML"
         media.append(entry)
 
-    response = await client.post(
-        _api_url(config.telegram_bot_token, "sendMediaGroup"),
-        data={"chat_id": config.telegram_chat_id, "media": json.dumps(media)},
-        files=files,
-    )
-    if response.status_code == 200:
-        return response.json()["result"][0]["message_id"]
+    for attempt in range(3):
+        response = await client.post(
+            _api_url(config.telegram_bot_token, "sendMediaGroup"),
+            data={"chat_id": config.telegram_chat_id, "media": json.dumps(media)},
+            files=files,
+        )
+        if response.status_code == 200:
+            return response.json()["result"][0]["message_id"]
+        if response.status_code == 429:
+            retry_after = response.json().get("parameters", {}).get("retry_after", 5)
+            logger.info("sendMediaGroup rate-limited, sleeping %ds (attempt %d)", retry_after, attempt + 1)
+            await asyncio.sleep(retry_after + 1)
+            continue
+        break
     logger.warning("sendMediaGroup failed: %s", response.text)
     return None
 
@@ -412,6 +420,7 @@ async def _publish_gallery(
 
     for group in groups[:-1]:
         await _send_media_group(client, config, group, caption=None)
+        await asyncio.sleep(3)
 
     return await _send_media_group(client, config, groups[-1], caption=caption)
 
