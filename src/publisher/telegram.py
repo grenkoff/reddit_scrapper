@@ -420,7 +420,7 @@ async def _publish_gallery(
 
     for group in groups[:-1]:
         await _send_media_group(client, config, group, caption=None)
-        await asyncio.sleep(3)
+        await asyncio.sleep(1)
 
     return await _send_media_group(client, config, groups[-1], caption=caption)
 
