@@ -156,6 +156,17 @@ async def get_post(reddit_id: str) -> dict | None:
         return post
 
 
+async def delete_old_posts() -> int:
+    async with _pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM posts WHERE created_utc < NOW() - INTERVAL '24 hours'"
+        )
+    deleted = int(result.split()[-1])
+    if deleted:
+        logger.info("Deleted %d posts older than 24h", deleted)
+    return deleted
+
+
 async def get_explanation(reddit_id: str) -> str | None:
     async with _pool.acquire() as conn:
         row = await conn.fetchrow("SELECT ai_explanation FROM posts WHERE reddit_id = $1", reddit_id)
