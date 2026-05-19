@@ -21,6 +21,10 @@ class Config:
     telegram_chat_id: str
     database_url: str
     gemini_api_key: str | None = None
+    reddit_client_id: str | None = None
+    reddit_client_secret: str | None = None
+    reddit_proxy_url: str | None = None
+    reddit_proxy_secret: str | None = None
     reddit_user_agent: str = "reddit-scrapper/0.1 (by u/your_username)"
     scrape_interval: int = 1200  # seconds (20 minutes)
     posts_limit: int = 50
@@ -49,6 +53,10 @@ def load_config() -> Config:
         telegram_chat_id=chat_id,
         database_url=database_url,
         gemini_api_key=os.getenv("GEMINI_API_KEY") or None,
+        reddit_client_id=os.getenv("REDDIT_CLIENT_ID") or None,
+        reddit_client_secret=os.getenv("REDDIT_CLIENT_SECRET") or None,
+        reddit_proxy_url=os.getenv("REDDIT_PROXY_URL") or None,
+        reddit_proxy_secret=os.getenv("REDDIT_PROXY_SECRET") or None,
         reddit_user_agent=os.getenv("REDDIT_USER_AGENT", "reddit-scrapper/0.1 (by u/your_username)"),
         scrape_interval=int(os.getenv("SCRAPE_INTERVAL", "1200")),
         posts_limit=int(os.getenv("POSTS_LIMIT", "50")),

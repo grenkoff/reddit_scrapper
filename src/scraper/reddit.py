@@ -1,6 +1,7 @@
 import asyncio
 import html as _html
 import logging
+import time
 from datetime import UTC, datetime
 
 import httpx
@@ -10,6 +11,29 @@ from src.config import Config
 logger = logging.getLogger(__name__)
 
 REDDIT_URL = "https://www.reddit.com/.json"
+REDDIT_OAUTH_URL = "https://oauth.reddit.com/.json"
+
+_oauth_token: str | None = None
+_oauth_token_expires: float = 0.0
+
+
+async def _get_oauth_token(config: Config) -> str:
+    global _oauth_token, _oauth_token_expires
+    if _oauth_token and time.monotonic() < _oauth_token_expires - 60:
+        return _oauth_token
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.post(
+            "https://www.reddit.com/api/v1/access_token",
+            auth=(config.reddit_client_id, config.reddit_client_secret),
+            data={"grant_type": "client_credentials"},
+            headers={"User-Agent": config.reddit_user_agent},
+        )
+        response.raise_for_status()
+    data = response.json()
+    _oauth_token = data["access_token"]
+    _oauth_token_expires = time.monotonic() + data["expires_in"]
+    logger.info("Reddit OAuth token acquired, expires in %ds", data["expires_in"])
+    return _oauth_token
 
 
 def _detect_post_type(data: dict) -> str:
@@ -81,8 +105,18 @@ async def fetch_top_posts(config: Config) -> list[dict]:
         "Accept-Language": "en-US,en;q=0.9",
     }
 
+    if config.reddit_proxy_url and config.reddit_proxy_secret:
+        url = config.reddit_proxy_url.rstrip("/") + "/.json"
+        headers["X-Proxy-Secret"] = config.reddit_proxy_secret
+    elif config.reddit_client_id and config.reddit_client_secret:
+        token = await _get_oauth_token(config)
+        headers["Authorization"] = f"Bearer {token}"
+        url = REDDIT_OAUTH_URL
+    else:
+        url = REDDIT_URL
+
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        response = await client.get(REDDIT_URL, params=params, headers=headers)
+        response = await client.get(url, params=params, headers=headers)
         response.raise_for_status()
 
     children = response.json().get("data", {}).get("children", [])
