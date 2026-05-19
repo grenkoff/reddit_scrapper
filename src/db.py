@@ -100,7 +100,7 @@ async def insert_post(post: dict) -> None:
 
 
 async def get_unpublished_posts(limit: int | None = None) -> list[dict]:
-    query = "SELECT * FROM posts WHERE published_to_tg = FALSE ORDER BY score DESC"
+    query = "SELECT * FROM posts WHERE published_to_tg = FALSE AND created_utc > NOW() - INTERVAL '24 hours' ORDER BY score DESC"
     if limit:
         query += f" LIMIT {limit}"
     async with _pool.acquire() as conn:
@@ -154,17 +154,6 @@ async def get_post(reddit_id: str) -> dict | None:
         if post.get("media_urls"):
             post["media_urls"] = json.loads(post["media_urls"])
         return post
-
-
-async def delete_old_posts() -> int:
-    async with _pool.acquire() as conn:
-        result = await conn.execute(
-            "DELETE FROM posts WHERE created_utc < NOW() - INTERVAL '24 hours'"
-        )
-    deleted = int(result.split()[-1])
-    if deleted:
-        logger.info("Deleted %d posts older than 24h", deleted)
-    return deleted
 
 
 async def get_explanation(reddit_id: str) -> str | None:

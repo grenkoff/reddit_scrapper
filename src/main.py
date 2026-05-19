@@ -11,7 +11,6 @@ import httpx
 from src.config import load_config
 from src.db import (
     close_db,
-    delete_old_posts,
     get_unpublished_posts,
     init_db,
     insert_post,
@@ -48,24 +47,16 @@ def _is_video_url(url: str) -> bool:
     return any(d in netloc for d in _VIDEO_DOMAINS)
 
 
-_MAX_POST_AGE_HOURS = 24
-
-
 async def scrape_new_posts(config) -> None:
     """Fetch Reddit and store new posts in DB."""
     started_at = datetime.now(UTC)
     posts_found = posts_new = 0
     error = None
     try:
-        await delete_old_posts()
         posts = await fetch_top_posts(config)
         posts_found = len(posts)
-        cutoff = datetime.now(UTC).timestamp() - _MAX_POST_AGE_HOURS * 3600
         for post in posts:
             if config.skip_nsfw and post["is_nsfw"]:
-                continue
-            post_ts = datetime.fromisoformat(post["created_utc"]).timestamp()
-            if post_ts < cutoff:
                 continue
             if await is_post_exists(post["reddit_id"]):
                 continue
@@ -232,7 +223,7 @@ async def main() -> None:
         "Bot started — publish every %.0fs, scrape every %ds", config.pause_between_posts, config.scrape_interval
     )
 
-    last_scrape: float = 0.0
+    last_scrape: float = float("-inf")
 
     while not stop_event.is_set():
         now = time.monotonic()
