@@ -112,6 +112,14 @@ async def get_unpublished_posts(limit: int | None = None) -> list[dict]:
     return posts
 
 
+async def mark_as_unpublished(reddit_id: str) -> None:
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE posts SET published_to_tg = FALSE, published_at = NULL, tg_message_id = NULL WHERE reddit_id = $1",
+            reddit_id,
+        )
+
+
 async def mark_as_published(reddit_id: str, tg_message_id: int) -> None:
     async with _pool.acquire() as conn:
         await conn.execute(
