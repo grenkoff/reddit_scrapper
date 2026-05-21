@@ -21,6 +21,7 @@ dev = [
     "ruff>=0.9",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=7.0",
     "respx>=0.21",
 ]
 
@@ -55,7 +56,3 @@ quote-style = "double"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 
-[dependency-groups]
-dev = [
-    "pytest-cov>=7.1.0",
-]
