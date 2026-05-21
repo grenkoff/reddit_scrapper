@@ -134,13 +134,18 @@ async def fetch_top_posts(config: Config) -> list[dict]:
 async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list[dict]:
     """Fetch top-level comments sorted by score."""
     reddit_id = post["reddit_id"].removeprefix("t3_")
-    url = f"https://www.reddit.com/r/{post['subreddit']}/comments/{reddit_id}.json"
     params = {"raw_json": 1, "sort": "top", "limit": 20}
     headers = {
         "User-Agent": config.reddit_user_agent,
         "Accept": "application/json",
         "Accept-Language": "en-US,en;q=0.9",
     }
+
+    if config.reddit_proxy_url and config.reddit_proxy_secret:
+        url = f"{config.reddit_proxy_url.rstrip('/')}/r/{post['subreddit']}/comments/{reddit_id}.json"
+        headers["X-Proxy-Secret"] = config.reddit_proxy_secret
+    else:
+        url = f"https://www.reddit.com/r/{post['subreddit']}/comments/{reddit_id}.json"
 
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
