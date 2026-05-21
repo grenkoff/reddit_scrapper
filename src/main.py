@@ -1,7 +1,6 @@
 import asyncio
 import contextlib
 import logging
-import os
 import random
 import signal
 import time
@@ -33,7 +32,7 @@ from src.scraper.reddit import fetch_fresh_hls_url, fetch_top_comments, fetch_to
 from src.webapp.server import start_webapp_task
 
 logging.basicConfig(
-    level=logging.DEBUG if os.getenv("DEBUG_LOGGING") else logging.INFO,
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)

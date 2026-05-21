@@ -7,7 +7,6 @@ import httpx
 from src.config import Config
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 
 class UpdatePoller:
@@ -66,14 +65,6 @@ class UpdatePoller:
         return response.json().get("result", [])
 
     def _handle_message(self, msg: dict) -> None:
-        chat_title = msg.get("chat", {}).get("title", "?")
-        logger.debug(
-            "Message in '%s': is_auto_forward=%s forward_from_message_id=%s forward_origin=%s",
-            chat_title,
-            msg.get("is_automatic_forward"),
-            msg.get("forward_from_message_id"),
-            msg.get("forward_origin", {}).get("type"),
-        )
         if not msg.get("is_automatic_forward"):
             return
         # Bot API 7.0+ moved forward fields into forward_origin.
