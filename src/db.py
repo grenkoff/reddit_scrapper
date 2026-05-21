@@ -52,6 +52,12 @@ async def init_db(database_url: str) -> None:
         """)
         with contextlib.suppress(Exception):
             await conn.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS ai_explanation TEXT")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
     logger.info("Database initialized")
 
 
@@ -176,4 +182,19 @@ async def save_explanation(reddit_id: str, explanation: str) -> None:
             "UPDATE posts SET ai_explanation = $1 WHERE reddit_id = $2",
             explanation,
             reddit_id,
+        )
+
+
+async def get_setting(key: str) -> str | None:
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT value FROM settings WHERE key = $1", key)
+        return row["value"] if row else None
+
+
+async def save_setting(key: str, value: str) -> None:
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2",
+            key,
+            value,
         )

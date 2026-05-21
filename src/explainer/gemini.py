@@ -10,7 +10,16 @@ from src.config import Config
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT = (Path(__file__).parent / "system_prompt.txt").read_text(encoding="utf-8").strip()
+_SYSTEM_PROMPT_DEFAULT = (Path(__file__).parent / "system_prompt.txt").read_text(encoding="utf-8").strip()
+
+
+async def _get_system_prompt() -> str:
+    try:
+        from src.db import get_setting
+        prompt = await get_setting("system_prompt")
+        return prompt if prompt else _SYSTEM_PROMPT_DEFAULT
+    except Exception:
+        return _SYSTEM_PROMPT_DEFAULT
 
 
 def _fetch_image(url: str) -> dict | None:
@@ -64,9 +73,9 @@ def _build_parts(post: dict, comments: list[dict] | None = None) -> list[dict]:
     return [*image_parts, text_part]
 
 
-def _build_payload(post: dict, comments: list[dict] | None = None) -> dict:
+def _build_payload(post: dict, system_prompt: str, comments: list[dict] | None = None) -> dict:
     return {
-        "system_instruction": {"parts": [{"text": _SYSTEM_PROMPT}]},
+        "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"role": "user", "parts": _build_parts(post, comments)}],
         "generationConfig": {
             "maxOutputTokens": 2048,
@@ -88,12 +97,13 @@ async def _safe_fetch_comments(config: Config, post: dict) -> list[dict]:
 
 async def generate_explanation(config: Config, post: dict) -> str:
     comments = await _safe_fetch_comments(config, post)
+    system_prompt = await _get_system_prompt()
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"gemini-3.1-flash-lite:generateContent?key={config.gemini_api_key}"
     )
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(url, json=_build_payload(post, comments))
+        response = await client.post(url, json=_build_payload(post, system_prompt, comments))
         if response.status_code != 200:
             logger.warning("Gemini HTTP %s: %s", response.status_code, response.text)
             response.raise_for_status()
@@ -109,13 +119,14 @@ async def generate_explanation(config: Config, post: dict) -> str:
 async def stream_explanation(config: Config, post: dict) -> AsyncIterator[str]:
     """Stream explanation chunks from Gemini SSE endpoint."""
     comments = await _safe_fetch_comments(config, post)
+    system_prompt = await _get_system_prompt()
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"gemini-3.1-flash-lite:streamGenerateContent?alt=sse&key={config.gemini_api_key}"
     )
     async with (
         httpx.AsyncClient(timeout=60) as client,
-        client.stream("POST", url, json=_build_payload(post, comments)) as response,
+        client.stream("POST", url, json=_build_payload(post, system_prompt, comments)) as response,
     ):
         if response.status_code != 200:
             body = await response.aread()
