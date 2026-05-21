@@ -183,3 +183,34 @@ async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list
     except Exception:
         logger.warning("Failed to fetch comments for %s", post["reddit_id"], exc_info=True)
         return []
+
+
+async def fetch_fresh_hls_url(config: Config, reddit_id: str) -> str | None:
+    """Fetch a fresh HLS URL for a Reddit video post (auth token may have expired)."""
+    post_id = reddit_id.removeprefix("t3_")
+    headers = {
+        "User-Agent": config.reddit_user_agent,
+        "Accept": "application/json",
+    }
+    if config.reddit_proxy_url and config.reddit_proxy_secret:
+        url = f"{config.reddit_proxy_url.rstrip('/')}/comments/{post_id}.json"
+        headers["X-Proxy-Secret"] = config.reddit_proxy_secret
+    else:
+        url = f"https://www.reddit.com/comments/{post_id}.json"
+
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            response = await client.get(url, params={"raw_json": 1, "limit": 1}, headers=headers)
+            response.raise_for_status()
+        data = response.json()
+        post_data = data[0]["data"]["children"][0]["data"]
+        hls_url = (
+            (post_data.get("media") or {}).get("reddit_video", {}).get("hls_url")
+            or (post_data.get("secure_media") or {}).get("reddit_video", {}).get("hls_url")
+        )
+        if hls_url:
+            logger.info("Refreshed HLS URL for %s", reddit_id)
+        return hls_url
+    except Exception:
+        logger.debug("Could not refresh HLS URL for %s", reddit_id, exc_info=True)
+        return None

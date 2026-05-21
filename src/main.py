@@ -28,7 +28,7 @@ from src.scraper.media import (
     download_video,
     download_video_direct,
 )
-from src.scraper.reddit import fetch_top_comments, fetch_top_posts
+from src.scraper.reddit import fetch_fresh_hls_url, fetch_top_comments, fetch_top_posts
 from src.webapp.server import start_webapp_task
 
 logging.basicConfig(
@@ -138,7 +138,8 @@ async def publish_one(config, poller: "UpdatePoller") -> bool | None:
             await mark_as_published(post["reddit_id"], 0)
             return False
     elif post["post_type"] == "video" and post.get("video_url"):
-        media_path = await download_video_direct(post["video_url"], hls_url=post.get("hls_url"))
+        hls_url = await fetch_fresh_hls_url(config, post["reddit_id"]) or post.get("hls_url")
+        media_path = await download_video_direct(post["video_url"], hls_url=hls_url)
         if media_path:
             media_path = await asyncio.get_event_loop().run_in_executor(None, compress_video, media_path)
         if media_path is None:
