@@ -181,7 +181,7 @@ def create_app(config: Config) -> FastAPI:
 
         async def event_stream():
             cached = await get_explanation(reddit_id)
-            if cached:
+            if cached and len(cached) >= 50:
                 yield sse("chunk", cached)
                 yield sse("done", "")
                 return
