@@ -205,8 +205,9 @@ def create_app(config: Config) -> FastAPI:
                 yield sse("error", "Не удалось сгенерировать объяснение.")
                 return
 
-            if full_text.strip():
-                await save_explanation(reddit_id, full_text.strip())
+            text = full_text.strip()
+            if text and text[-1] in ".!?*_»\"'）)":
+                await save_explanation(reddit_id, text)
             yield sse("done", "")
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
