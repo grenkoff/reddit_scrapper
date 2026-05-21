@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from src.config import Config
-from src.db import get_explanation, get_post, save_explanation
+from src.db import get_explanation, get_post, mark_as_unpublished, save_explanation
 from src.explainer.gemini import stream_explanation
 
 logger = logging.getLogger(__name__)
@@ -173,6 +173,13 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/health")
     async def health() -> dict:
         return {"ok": True}
+
+    @app.post("/admin/reset")
+    async def admin_reset(reddit_id: str, secret: str) -> JSONResponse:
+        if secret != (config.reddit_proxy_secret or ""):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        await mark_as_unpublished(reddit_id)
+        return JSONResponse({"ok": True, "reddit_id": reddit_id})
 
     @app.get("/api/explain/stream")
     async def explain_stream(reddit_id: str):
