@@ -87,7 +87,10 @@ def _get_ffmpeg() -> str | None:
 
         return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
-        return None
+        pass
+    import shutil
+
+    return shutil.which("ffmpeg")
 
 
 def _ffmpeg_dir_for_ytdlp() -> str | None:
