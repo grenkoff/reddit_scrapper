@@ -395,13 +395,20 @@ async def _publish_text_messages(
         raw_chunks = [""]
 
     msg_id = None
+    last = len(raw_chunks) - 1
     for i, raw_chunk in enumerate(raw_chunks):
         chunk_html = _md_to_telegram_html(raw_chunk)
-        text = f"{title_html}\n\n{chunk_html}" if i == 0 else chunk_html
-        if i == len(raw_chunks) - 1:
-            text += f"\n\n{footer}"
-        is_last = i == len(raw_chunks) - 1
-        msg_id = await _send_message(client, config, text, reply_markup=reply_markup if is_last else None)
+        if i == 0:
+            text = f"{title_html}\n\n{chunk_html}"
+            if i == last:
+                text += f"\n\n{footer}"
+            else:
+                text += "..."
+        elif i == last:
+            text = f"\U0001f4ac\n...{chunk_html}\n\n{footer}"
+        else:
+            text = f"\U0001f4ac\n...{chunk_html}..."
+        msg_id = await _send_message(client, config, text, reply_markup=reply_markup if i == last else None)
     return msg_id
 
 
