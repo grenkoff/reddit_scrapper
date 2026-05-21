@@ -3,11 +3,12 @@ import json
 import logging
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from src.config import Config
-from src.db import get_explanation, get_post, mark_as_unpublished, save_explanation
+from src.db import get_explanation, get_post, get_setting, mark_as_unpublished, save_explanation, save_setting
+from src.explainer.gemini import _SYSTEM_PROMPT_DEFAULT
 from src.explainer.gemini import stream_explanation
 
 logger = logging.getLogger(__name__)
@@ -180,6 +181,50 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
         await mark_as_unpublished(reddit_id)
         return JSONResponse({"ok": True, "reddit_id": reddit_id})
+
+    @app.get("/admin/prompt", response_class=HTMLResponse)
+    async def prompt_page(secret: str = "") -> HTMLResponse:
+        if secret != (config.reddit_proxy_secret or ""):
+            return HTMLResponse("<h3>Unauthorized</h3>", status_code=401)
+        current = (await get_setting("system_prompt")) or _SYSTEM_PROMPT_DEFAULT
+        escaped = current.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        html = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>System Prompt</title>
+<style>
+  body {{ font-family: sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; background: #f5f5f5; }}
+  h2 {{ color: #333; }}
+  textarea {{ width: 100%; height: 500px; font-family: monospace; font-size: 14px; padding: 12px;
+             border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; resize: vertical; }}
+  button {{ margin-top: 12px; padding: 10px 24px; background: #2d7dd2; color: white;
+            border: none; border-radius: 6px; font-size: 15px; cursor: pointer; }}
+  button:hover {{ background: #245fa8; }}
+  .saved {{ color: green; margin-left: 12px; display: none; }}
+</style>
+</head>
+<body>
+<h2>System Prompt</h2>
+<form method="post" action="/admin/prompt?secret={secret}">
+  <textarea name="prompt">{escaped}</textarea><br>
+  <button type="submit">Сохранить</button>
+  <span class="saved" id="saved">✓ Сохранено</span>
+</form>
+</body>
+</html>"""
+        return HTMLResponse(html)
+
+    @app.post("/admin/prompt", response_class=HTMLResponse)
+    async def prompt_save(secret: str = "", prompt: str = Form(default="")) -> HTMLResponse:
+        if secret != (config.reddit_proxy_secret or ""):
+            return HTMLResponse("<h3>Unauthorized</h3>", status_code=401)
+        await save_setting("system_prompt", prompt.strip())
+        logger.info("System prompt updated (%d chars)", len(prompt))
+        return HTMLResponse(
+            f'<meta http-equiv="refresh" content="0;url=/admin/prompt?secret={secret}">'
+        )
 
     @app.get("/api/explain/stream")
     async def explain_stream(reddit_id: str):
