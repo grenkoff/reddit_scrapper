@@ -7,6 +7,7 @@ import httpx
 from src.config import Config
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 class UpdatePoller:
