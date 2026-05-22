@@ -41,7 +41,7 @@ def _fetch_image(url: str) -> dict | None:
         return None
 
 
-def _build_parts(post: dict, comments: list[dict] | None = None) -> list[dict]:
+def _build_parts(post: dict, comments: list[dict] | None = None, skip_image_text: bool = False) -> list[dict]:
     lines = [
         f"Subreddit: r/{post['subreddit']}",
         f"Заголовок: {post['title']}",
@@ -50,6 +50,8 @@ def _build_parts(post: dict, comments: list[dict] | None = None) -> list[dict]:
     if post.get("selftext"):
         lines.append(f"Текст: {post['selftext'][:2000]}")
     lines.append(f"Оценка: {post['score']} upvotes, {post['num_comments']} комментариев")
+    if skip_image_text:
+        lines.append("\nВАЖНО: Раздел 4 (Текст с картинки) не включай — картинка с переведённым текстом уже показана пользователю отдельно.")
     if comments:
         lines.append("")
         lines.append("Топ комментарии (используй как контекст для понимания, не переводи):")
@@ -73,10 +75,10 @@ def _build_parts(post: dict, comments: list[dict] | None = None) -> list[dict]:
     return [*image_parts, text_part]
 
 
-def _build_payload(post: dict, system_prompt: str, comments: list[dict] | None = None) -> dict:
+def _build_payload(post: dict, system_prompt: str, comments: list[dict] | None = None, skip_image_text: bool = False) -> dict:
     return {
         "system_instruction": {"parts": [{"text": system_prompt}]},
-        "contents": [{"role": "user", "parts": _build_parts(post, comments)}],
+        "contents": [{"role": "user", "parts": _build_parts(post, comments, skip_image_text=skip_image_text)}],
         "generationConfig": {
             "maxOutputTokens": 2048,
             "temperature": 0.4,
@@ -116,7 +118,7 @@ async def generate_explanation(config: Config, post: dict) -> str:
         return "Не удалось сгенерировать объяснение."
 
 
-async def stream_explanation(config: Config, post: dict) -> AsyncIterator[str]:
+async def stream_explanation(config: Config, post: dict, skip_image_text: bool = False) -> AsyncIterator[str]:
     """Stream explanation chunks from Gemini SSE endpoint."""
     comments = await _safe_fetch_comments(config, post)
     system_prompt = await _get_system_prompt()
@@ -126,7 +128,7 @@ async def stream_explanation(config: Config, post: dict) -> AsyncIterator[str]:
     )
     async with (
         httpx.AsyncClient(timeout=60) as client,
-        client.stream("POST", url, json=_build_payload(post, system_prompt, comments)) as response,
+        client.stream("POST", url, json=_build_payload(post, system_prompt, comments, skip_image_text=skip_image_text)) as response,
     ):
         if response.status_code != 200:
             body = await response.aread()
