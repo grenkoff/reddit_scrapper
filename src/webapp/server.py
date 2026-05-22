@@ -261,17 +261,15 @@ def create_app(config: Config) -> FastAPI:
                 return
 
             cached = await get_explanation(reddit_id)
-            if cached and len(cached) >= 50:
-                image_data = await get_translated_image(reddit_id)
-                if image_data:
-                    yield sse("image", f"/api/image/{reddit_id}")
-                yield sse("chunk", cached)
-                yield sse("done", "")
-                return
-
             post = await get_post(reddit_id)
             if not post:
                 yield sse("error", "Пост не найден.")
+                return
+
+            # For non-image posts: serve from cache if available
+            if cached and len(cached) >= 50 and post.get("post_type") != "image":
+                yield sse("chunk", cached)
+                yield sse("done", "")
                 return
 
             # Try image text translation for single-image posts
@@ -294,6 +292,14 @@ def create_app(config: Config) -> FastAPI:
                         skip_image_text = True
                 except Exception as e:
                     logger.debug("Image translation pipeline failed for %s: %s", reddit_id, e)
+
+            # Serve from cache only when image pipeline is consistent with cache:
+            # - no image overlay (pipeline didn't run) and cache exists → use cache
+            # - image overlay generated but cache was made before (may contain section 4) → regenerate
+            if cached and len(cached) >= 50 and not skip_image_text:
+                yield sse("chunk", cached)
+                yield sse("done", "")
+                return
 
             full_text = ""
             try:

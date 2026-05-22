@@ -71,9 +71,10 @@ async def test_explain_returns_error_when_not_cached():
 
 async def test_explain_stream_serves_cached_explanation():
     long_cached = "A" * 60 + "."
+    fake_post = {"reddit_id": "t3_abc", "title": "Test", "post_type": "text"}
     with (
         patch("src.webapp.server.get_explanation", new_callable=AsyncMock, return_value=long_cached),
-        patch("src.webapp.server.get_translated_image", new_callable=AsyncMock, return_value=None),
+        patch("src.webapp.server.get_post", new_callable=AsyncMock, return_value=fake_post),
     ):
         async with await _client() as c:
             resp = await c.get("/api/explain/stream?reddit_id=t3_abc")
