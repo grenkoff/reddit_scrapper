@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import src.db as db_module
@@ -35,6 +35,7 @@ def _make_pool(fetchrow_return=None, fetch_return=None, execute_return="UPDATE 1
 
 
 # --- get_unpublished_posts ---
+
 
 async def test_get_unpublished_posts_empty():
     pool, conn = _make_pool(fetch_return=[])
@@ -88,6 +89,7 @@ async def test_get_unpublished_posts_null_media_urls_stays_none():
 
 # --- mark_as_unpublished ---
 
+
 async def test_mark_as_unpublished_clears_fields():
     pool, conn = _make_pool()
     with patch.object(db_module, "_pool", pool):
@@ -100,6 +102,7 @@ async def test_mark_as_unpublished_clears_fields():
 
 
 # --- get_post ---
+
 
 async def test_get_post_found():
     pool, conn = _make_pool(fetchrow_return={"reddit_id": "t3_abc", "media_urls": None})
@@ -123,6 +126,7 @@ async def test_get_post_deserializes_media_urls():
 
 
 # --- get_explanation / save_explanation ---
+
 
 async def test_get_explanation_returns_text():
     pool, conn = _make_pool(fetchrow_return={"ai_explanation": "Some explanation."})
@@ -148,6 +152,7 @@ async def test_save_explanation_passes_correct_args():
 
 
 # --- log_scrape ---
+
 
 async def test_log_scrape_inserts_row():
     pool, conn = _make_pool()

@@ -52,6 +52,8 @@ async def init_db(database_url: str) -> None:
         """)
         with contextlib.suppress(Exception):
             await conn.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS ai_explanation TEXT")
+        with contextlib.suppress(Exception):
+            await conn.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS translated_image BYTEA")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
@@ -106,7 +108,10 @@ async def insert_post(post: dict) -> None:
 
 
 async def get_unpublished_posts(limit: int | None = None) -> list[dict]:
-    query = "SELECT * FROM posts WHERE published_to_tg = FALSE AND created_utc > NOW() - INTERVAL '24 hours' ORDER BY score DESC"
+    query = (
+        "SELECT * FROM posts WHERE published_to_tg = FALSE"
+        " AND created_utc > NOW() - INTERVAL '24 hours' ORDER BY score DESC"
+    )
     if limit:
         query += f" LIMIT {limit}"
     async with _pool.acquire() as conn:
@@ -181,6 +186,21 @@ async def save_explanation(reddit_id: str, explanation: str) -> None:
         await conn.execute(
             "UPDATE posts SET ai_explanation = $1 WHERE reddit_id = $2",
             explanation,
+            reddit_id,
+        )
+
+
+async def get_translated_image(reddit_id: str) -> bytes | None:
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT translated_image FROM posts WHERE reddit_id = $1", reddit_id)
+        return bytes(row["translated_image"]) if row and row["translated_image"] else None
+
+
+async def save_translated_image(reddit_id: str, data: bytes) -> None:
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE posts SET translated_image = $1 WHERE reddit_id = $2",
+            data,
             reddit_id,
         )
 

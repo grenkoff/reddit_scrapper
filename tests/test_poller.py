@@ -1,5 +1,4 @@
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import respx
 from httpx import Response
@@ -19,6 +18,7 @@ def _make_poller():
 
 
 # --- register_post / wait_for_discussion_id ---
+
 
 async def test_register_creates_future():
     poller = _make_poller()
@@ -55,6 +55,7 @@ async def test_wait_returns_none_when_not_registered():
 
 
 # --- _handle_message ---
+
 
 def test_handle_message_auto_forward_resolves_future():
     poller = _make_poller()
@@ -125,6 +126,7 @@ def test_handle_message_no_match_leaves_future_pending():
 
 # --- _poll_once ---
 
+
 @respx.mock
 async def test_poll_once_advances_offset():
     updates_response = {
@@ -138,6 +140,7 @@ async def test_poll_once_advances_offset():
     )
     poller = _make_poller()
     import httpx
+
     async with httpx.AsyncClient(timeout=None) as client:
         updates = await poller._poll_once(client)
     assert len(updates) == 2
@@ -150,6 +153,7 @@ async def test_poll_once_returns_empty_on_non_200():
     )
     poller = _make_poller()
     import httpx
+
     async with httpx.AsyncClient(timeout=None) as client:
         updates = await poller._poll_once(client)
     assert updates == []

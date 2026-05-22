@@ -2,14 +2,24 @@ import asyncio
 import json
 import logging
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from src.config import Config
-from src.db import get_explanation, get_post, get_setting, mark_as_unpublished, save_explanation, save_setting
-from src.explainer.gemini import _SYSTEM_PROMPT_DEFAULT
-from src.explainer.gemini import stream_explanation
+from src.db import (
+    get_explanation,
+    get_post,
+    get_setting,
+    get_translated_image,
+    mark_as_unpublished,
+    save_explanation,
+    save_setting,
+    save_translated_image,
+)
+from src.explainer.gemini import _SYSTEM_PROMPT_DEFAULT, stream_explanation
+from src.explainer.image_processor import detect_image_text, overlay_translations
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +78,7 @@ _MINI_APP_HTML = """<!DOCTYPE html>
     50% { opacity: 0; }
   }
   .error { color: var(--tg-theme-destructive-text-color, #e74c3c); padding: 16px 0; }
+  .post-image { width: 100%; border-radius: 8px; margin-bottom: 12px; display: block; }
 </style>
 </head>
 <body>
@@ -129,6 +140,14 @@ _MINI_APP_HTML = """<!DOCTYPE html>
     let started = false;
     let buffer = '';
 
+    evt.addEventListener('image', (e) => {
+      const url = JSON.parse(e.data);
+      const img = document.createElement('img');
+      img.src = url;
+      img.className = 'post-image';
+      document.querySelector('.container').prepend(img);
+      loading.style.display = 'none';
+    });
     evt.addEventListener('chunk', (e) => {
       if (!started) {
         loading.style.display = 'none';
@@ -222,9 +241,14 @@ def create_app(config: Config) -> FastAPI:
             return HTMLResponse("<h3>Unauthorized</h3>", status_code=401)
         await save_setting("system_prompt", prompt.strip())
         logger.info("System prompt updated (%d chars)", len(prompt))
-        return HTMLResponse(
-            f'<meta http-equiv="refresh" content="0;url=/admin/prompt?secret={secret}">'
-        )
+        return HTMLResponse(f'<meta http-equiv="refresh" content="0;url=/admin/prompt?secret={secret}">')
+
+    @app.get("/api/image/{reddit_id}")
+    async def image_endpoint(reddit_id: str):
+        data = await get_translated_image(reddit_id)
+        if not data:
+            return Response(status_code=404)
+        return Response(content=data, media_type="image/jpeg")
 
     @app.get("/api/explain/stream")
     async def explain_stream(reddit_id: str):
@@ -232,14 +256,17 @@ def create_app(config: Config) -> FastAPI:
             return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
         async def event_stream():
-            cached = await get_explanation(reddit_id)
-            if cached and len(cached) >= 50:
-                yield sse("chunk", cached)
-                yield sse("done", "")
-                return
-
             if not config.gemini_api_key:
                 yield sse("error", "AI не настроен.")
+                return
+
+            cached = await get_explanation(reddit_id)
+            if cached and len(cached) >= 50:
+                image_data = await get_translated_image(reddit_id)
+                if image_data:
+                    yield sse("image", f"/api/image/{reddit_id}")
+                yield sse("chunk", cached)
+                yield sse("done", "")
                 return
 
             post = await get_post(reddit_id)
@@ -247,9 +274,30 @@ def create_app(config: Config) -> FastAPI:
                 yield sse("error", "Пост не найден.")
                 return
 
+            # Try image text translation for single-image posts
+            skip_image_text = False
+            if post.get("post_type") == "image":
+                try:
+                    image_data = await get_translated_image(reddit_id)
+                    if not image_data:
+                        image_url = post.get("content_url") or post.get("preview_url")
+                        if image_url:
+                            regions = await detect_image_text(image_url, config)
+                            if regions:
+                                async with httpx.AsyncClient(timeout=15) as img_client:
+                                    raw_resp = await img_client.get(image_url, follow_redirects=True)
+                                raw_resp.raise_for_status()
+                                image_data = overlay_translations(raw_resp.content, regions)
+                                await save_translated_image(reddit_id, image_data)
+                    if image_data:
+                        yield sse("image", f"/api/image/{reddit_id}")
+                        skip_image_text = True
+                except Exception as e:
+                    logger.debug("Image translation pipeline failed for %s: %s", reddit_id, e)
+
             full_text = ""
             try:
-                async for chunk in stream_explanation(config, post):
+                async for chunk in stream_explanation(config, post, skip_image_text=skip_image_text):
                     full_text += chunk
                     yield sse("chunk", chunk)
             except Exception as e:

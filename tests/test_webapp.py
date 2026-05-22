@@ -1,6 +1,5 @@
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from httpx import ASGITransport, AsyncClient
 
 from src.config import Config
@@ -22,6 +21,7 @@ async def _client(config=CONFIG):
 
 # --- /health ---
 
+
 async def test_health_returns_ok():
     async with await _client() as c:
         resp = await c.get("/health")
@@ -30,6 +30,7 @@ async def test_health_returns_ok():
 
 
 # --- /admin/reset ---
+
 
 async def test_admin_reset_wrong_secret():
     async with await _client() as c:
@@ -47,6 +48,7 @@ async def test_admin_reset_correct_secret():
 
 
 # --- /api/explain ---
+
 
 async def test_explain_returns_cached():
     with patch("src.webapp.server.get_explanation", new_callable=AsyncMock, return_value="Cached text."):
@@ -66,9 +68,13 @@ async def test_explain_returns_error_when_not_cached():
 
 # --- /api/explain/stream ---
 
+
 async def test_explain_stream_serves_cached_explanation():
     long_cached = "A" * 60 + "."
-    with patch("src.webapp.server.get_explanation", new_callable=AsyncMock, return_value=long_cached):
+    with (
+        patch("src.webapp.server.get_explanation", new_callable=AsyncMock, return_value=long_cached),
+        patch("src.webapp.server.get_translated_image", new_callable=AsyncMock, return_value=None),
+    ):
         async with await _client() as c:
             resp = await c.get("/api/explain/stream?reddit_id=t3_abc")
     assert resp.status_code == 200
@@ -76,18 +82,22 @@ async def test_explain_stream_serves_cached_explanation():
 
 
 async def test_explain_stream_ignores_short_cache():
-    with patch("src.webapp.server.get_explanation", new_callable=AsyncMock, return_value="short"):
-        with patch("src.webapp.server.get_post", new_callable=AsyncMock, return_value=None):
-            async with await _client() as c:
-                resp = await c.get("/api/explain/stream?reddit_id=t3_abc")
+    with (
+        patch("src.webapp.server.get_explanation", new_callable=AsyncMock, return_value="short"),
+        patch("src.webapp.server.get_post", new_callable=AsyncMock, return_value=None),
+    ):
+        async with await _client() as c:
+            resp = await c.get("/api/explain/stream?reddit_id=t3_abc")
     assert "Пост не найден" in resp.text
 
 
 async def test_explain_stream_post_not_found():
-    with patch("src.webapp.server.get_explanation", new_callable=AsyncMock, return_value=None):
-        with patch("src.webapp.server.get_post", new_callable=AsyncMock, return_value=None):
-            async with await _client() as c:
-                resp = await c.get("/api/explain/stream?reddit_id=t3_missing")
+    with (
+        patch("src.webapp.server.get_explanation", new_callable=AsyncMock, return_value=None),
+        patch("src.webapp.server.get_post", new_callable=AsyncMock, return_value=None),
+    ):
+        async with await _client() as c:
+            resp = await c.get("/api/explain/stream?reddit_id=t3_missing")
     assert "Пост не найден" in resp.text
 
 
@@ -108,28 +118,36 @@ async def test_explain_stream_no_gemini_key():
 async def test_explain_stream_caches_only_complete_response():
     fake_post = {"reddit_id": "t3_abc", "title": "Test", "post_type": "image"}
 
-    async def fake_stream(config, post):
+    async def fake_stream(config, post, skip_image_text=False):
         yield "Complete answer."
 
-    with patch("src.webapp.server.get_explanation", new_callable=AsyncMock, return_value=None):
-        with patch("src.webapp.server.get_post", new_callable=AsyncMock, return_value=fake_post):
-            with patch("src.webapp.server.stream_explanation", side_effect=fake_stream):
-                with patch("src.webapp.server.save_explanation", new_callable=AsyncMock) as mock_save:
-                    async with await _client() as c:
-                        await c.get("/api/explain/stream?reddit_id=t3_abc")
+    with (
+        patch("src.webapp.server.get_explanation", new_callable=AsyncMock, return_value=None),
+        patch("src.webapp.server.get_post", new_callable=AsyncMock, return_value=fake_post),
+        patch("src.webapp.server.get_translated_image", new_callable=AsyncMock, return_value=None),
+        patch("src.webapp.server.detect_image_text", new_callable=AsyncMock, return_value=[]),
+        patch("src.webapp.server.stream_explanation", side_effect=fake_stream),
+        patch("src.webapp.server.save_explanation", new_callable=AsyncMock) as mock_save,
+    ):
+        async with await _client() as c:
+            await c.get("/api/explain/stream?reddit_id=t3_abc")
     mock_save.assert_awaited_once()
 
 
 async def test_explain_stream_does_not_cache_truncated_response():
     fake_post = {"reddit_id": "t3_abc", "title": "Test", "post_type": "image"}
 
-    async def fake_stream(config, post):
+    async def fake_stream(config, post, skip_image_text=False):
         yield "Truncated mid-sentenc"  # no ending punctuation
 
-    with patch("src.webapp.server.get_explanation", new_callable=AsyncMock, return_value=None):
-        with patch("src.webapp.server.get_post", new_callable=AsyncMock, return_value=fake_post):
-            with patch("src.webapp.server.stream_explanation", side_effect=fake_stream):
-                with patch("src.webapp.server.save_explanation", new_callable=AsyncMock) as mock_save:
-                    async with await _client() as c:
-                        await c.get("/api/explain/stream?reddit_id=t3_abc")
+    with (
+        patch("src.webapp.server.get_explanation", new_callable=AsyncMock, return_value=None),
+        patch("src.webapp.server.get_post", new_callable=AsyncMock, return_value=fake_post),
+        patch("src.webapp.server.get_translated_image", new_callable=AsyncMock, return_value=None),
+        patch("src.webapp.server.detect_image_text", new_callable=AsyncMock, return_value=[]),
+        patch("src.webapp.server.stream_explanation", side_effect=fake_stream),
+        patch("src.webapp.server.save_explanation", new_callable=AsyncMock) as mock_save,
+    ):
+        async with await _client() as c:
+            await c.get("/api/explain/stream?reddit_id=t3_abc")
     mock_save.assert_not_awaited()
