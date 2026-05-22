@@ -2,11 +2,30 @@ import io
 import json
 import logging
 import statistics
+from pathlib import Path
 
 import httpx
 from PIL import Image, ImageDraw, ImageFont
 
 from src.config import Config
+
+_FONT_SEARCH_PATHS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+]
+
+
+def _load_ttf(size: int) -> ImageFont.FreeTypeFont | None:
+    for path in _FONT_SEARCH_PATHS:
+        if Path(path).exists():
+            try:
+                return ImageFont.truetype(path, size=size)
+            except Exception:
+                continue
+    return None
+
 
 logger = logging.getLogger(__name__)
 
@@ -84,15 +103,19 @@ def _contrasting(color: tuple[int, int, int]) -> tuple[int, int, int]:
     return (0, 0, 0) if luminance > 128 else (255, 255, 255)
 
 
+def _make_font(size: int) -> ImageFont.ImageFont:
+    return _load_ttf(size) or ImageFont.load_default(size=size)
+
+
 def _fit_text(draw: ImageDraw.ImageDraw, text: str, box_w: int, box_h: int) -> tuple[ImageFont.ImageFont, int, int]:
     for size in range(max(8, int(box_h * 0.4)), 7, -1):
-        font = ImageFont.load_default(size=size)
+        font = _make_font(size)
         bbox = draw.textbbox((0, 0), text, font=font)
         tw = bbox[2] - bbox[0]
         th = bbox[3] - bbox[1]
         if tw <= box_w and th <= box_h:
             return font, tw, th
-    font = ImageFont.load_default(size=8)
+    font = _make_font(8)
     bbox = draw.textbbox((0, 0), text, font=font)
     return font, bbox[2] - bbox[0], bbox[3] - bbox[1]
 
