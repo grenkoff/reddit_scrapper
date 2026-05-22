@@ -24,6 +24,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-cov>=7.0",
     "respx>=0.21",
+    "imageio-ffmpeg>=0.5",
 ]
 
 [tool.setuptools.packages.find]
