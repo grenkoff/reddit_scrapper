@@ -138,7 +138,10 @@ async def publish_one(config, poller: "UpdatePoller") -> bool | None:
             await mark_as_published(post["reddit_id"], 0)
             return False
     elif post["post_type"] == "video" and post.get("video_url"):
-        hls_url = await fetch_fresh_hls_url(config, post["reddit_id"]) or post.get("hls_url")
+        fresh_hls = await fetch_fresh_hls_url(config, post["reddit_id"])
+        hls_url = fresh_hls or post.get("hls_url")
+        if not hls_url:
+            logger.warning("No HLS URL for %s — video will have no audio", post["reddit_id"])
         media_path = await download_video_direct(post["video_url"], hls_url=hls_url)
         if media_path:
             media_path = await asyncio.get_event_loop().run_in_executor(None, compress_video, media_path)
