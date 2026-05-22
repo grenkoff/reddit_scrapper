@@ -153,7 +153,12 @@ async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list
                 response = await client.get(url, params=params, headers=headers)
                 if response.status_code in (403, 429) and attempt < 2:
                     retry_after = int(response.headers.get("Retry-After", (attempt + 1) * 10))
-                    logger.info("Reddit %d for comments %s, retrying in %ds", response.status_code, reddit_id, retry_after)
+                    logger.info(
+                        "Reddit %d for comments %s, retrying in %ds",
+                        response.status_code,
+                        reddit_id,
+                        retry_after,
+                    )
                     await asyncio.sleep(retry_after)
                     continue
                 response.raise_for_status()
@@ -216,10 +221,9 @@ async def fetch_fresh_hls_url(config: Config, reddit_id: str) -> str | None:
                 break
         data = response.json()
         post_data = data[0]["data"]["children"][0]["data"]
-        hls_url = (
-            (post_data.get("media") or {}).get("reddit_video", {}).get("hls_url")
-            or (post_data.get("secure_media") or {}).get("reddit_video", {}).get("hls_url")
-        )
+        hls_url = (post_data.get("media") or {}).get("reddit_video", {}).get("hls_url") or (
+            post_data.get("secure_media") or {}
+        ).get("reddit_video", {}).get("hls_url")
         if hls_url:
             logger.info("Refreshed HLS URL for %s", reddit_id)
         else:

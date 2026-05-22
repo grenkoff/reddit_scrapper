@@ -43,6 +43,7 @@ BASE_POST = {
 
 # --- _md_to_telegram_html ---
 
+
 def test_md_bold_double_star():
     assert "<b>hello</b>" in _md_to_telegram_html("**hello**")
 
@@ -91,6 +92,7 @@ def test_md_plain_text_unchanged():
 
 # --- _build_footer ---
 
+
 def test_footer_contains_subreddit_link():
     footer = _build_footer(BASE_POST, CONFIG)
     assert "r/funny" in footer
@@ -126,6 +128,7 @@ def test_footer_link_post_skips_reddit_domain():
 
 # --- _chunk_text_evenly ---
 
+
 def test_chunk_evenly_single_chunk():
     chunks = _chunk_text_evenly("short", "footer")
     assert len(chunks) == 1
@@ -152,6 +155,7 @@ def test_chunk_evenly_middle_chunks_have_prefix():
 
 # --- _publish_text_messages ---
 
+
 @respx.mock
 async def test_publish_text_single_message():
     respx.post("https://api.telegram.org/bottesttoken/sendMessage").mock(
@@ -159,6 +163,7 @@ async def test_publish_text_single_message():
     )
     post = {**BASE_POST, "selftext": "Short text."}
     import httpx
+
     async with httpx.AsyncClient() as client:
         msg_id = await _publish_text_messages(client, CONFIG, post)
     assert msg_id == 1
@@ -176,6 +181,7 @@ async def test_publish_text_split_adds_continuation_marker():
     # 900 words × 5 chars = 4500 chars → exceeds MAX_MESSAGE_LEN (4096) → forces split
     post = {**BASE_POST, "selftext": "word " * 900}
     import httpx
+
     async with httpx.AsyncClient() as client:
         await _publish_text_messages(client, CONFIG, post)
     assert len(call_bodies) >= 2
@@ -193,6 +199,7 @@ async def test_publish_text_first_message_ends_with_ellipsis_when_split():
     respx.post("https://api.telegram.org/bottesttoken/sendMessage").mock(side_effect=capture)
     post = {**BASE_POST, "selftext": "word " * 900}
     import httpx
+
     async with httpx.AsyncClient() as client:
         await _publish_text_messages(client, CONFIG, post)
     assert len(call_bodies) >= 2

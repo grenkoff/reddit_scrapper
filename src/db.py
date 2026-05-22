@@ -108,7 +108,10 @@ async def insert_post(post: dict) -> None:
 
 
 async def get_unpublished_posts(limit: int | None = None) -> list[dict]:
-    query = "SELECT * FROM posts WHERE published_to_tg = FALSE AND created_utc > NOW() - INTERVAL '24 hours' ORDER BY score DESC"
+    query = (
+        "SELECT * FROM posts WHERE published_to_tg = FALSE"
+        " AND created_utc > NOW() - INTERVAL '24 hours' ORDER BY score DESC"
+    )
     if limit:
         query += f" LIMIT {limit}"
     async with _pool.acquire() as conn:

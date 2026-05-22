@@ -1,6 +1,5 @@
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import respx
 from httpx import Response
@@ -34,6 +33,7 @@ SAMPLE_POST = {
 
 # --- fetch_top_posts ---
 
+
 @respx.mock
 async def test_fetch_top_posts_skips_removed():
     fixture = json.loads(json.dumps(FIXTURE))
@@ -54,9 +54,7 @@ async def test_fetch_top_posts_skips_deleted_author():
 
 @respx.mock
 async def test_fetch_top_posts_uses_proxy_url_and_secret():
-    respx.get("https://proxy.example.com/.json").mock(
-        return_value=Response(200, json=FIXTURE)
-    )
+    respx.get("https://proxy.example.com/.json").mock(return_value=Response(200, json=FIXTURE))
     posts = await fetch_top_posts(CONFIG_WITH_PROXY)
     assert len(posts) == 6
     request = respx.calls.last.request
@@ -125,9 +123,7 @@ async def test_fetch_top_comments_filters_stickied():
 
 @respx.mock
 async def test_fetch_top_comments_returns_empty_on_error():
-    respx.get("https://www.reddit.com/r/funny/comments/abc123.json").mock(
-        return_value=Response(500)
-    )
+    respx.get("https://www.reddit.com/r/funny/comments/abc123.json").mock(return_value=Response(500))
     comments = await fetch_top_comments(CONFIG, SAMPLE_POST)
     assert comments == []
 
@@ -156,9 +152,7 @@ async def test_fetch_top_comments_sorted_by_score():
             }
         },
     ]
-    respx.get("https://www.reddit.com/r/funny/comments/abc123.json").mock(
-        return_value=Response(200, json=fixture)
-    )
+    respx.get("https://www.reddit.com/r/funny/comments/abc123.json").mock(return_value=Response(200, json=fixture))
     comments = await fetch_top_comments(CONFIG, SAMPLE_POST)
     assert comments[0]["author"] == "high"
 
@@ -169,15 +163,7 @@ HLS_POST_FIXTURE = [
     {
         "data": {
             "children": [
-                {
-                    "data": {
-                        "media": {
-                            "reddit_video": {
-                                "hls_url": "https://v.redd.it/abc/HLSPlaylist.m3u8?a=newtoken"
-                            }
-                        }
-                    }
-                }
+                {"data": {"media": {"reddit_video": {"hls_url": "https://v.redd.it/abc/HLSPlaylist.m3u8?a=newtoken"}}}}
             ]
         }
     }
@@ -186,18 +172,14 @@ HLS_POST_FIXTURE = [
 
 @respx.mock
 async def test_fetch_fresh_hls_url_returns_url():
-    respx.get("https://www.reddit.com/comments/abc123.json").mock(
-        return_value=Response(200, json=HLS_POST_FIXTURE)
-    )
+    respx.get("https://www.reddit.com/comments/abc123.json").mock(return_value=Response(200, json=HLS_POST_FIXTURE))
     result = await fetch_fresh_hls_url(CONFIG, "t3_abc123")
     assert result == "https://v.redd.it/abc/HLSPlaylist.m3u8?a=newtoken"
 
 
 @respx.mock
 async def test_fetch_fresh_hls_url_uses_proxy():
-    respx.get("https://proxy.example.com/comments/abc123.json").mock(
-        return_value=Response(200, json=HLS_POST_FIXTURE)
-    )
+    respx.get("https://proxy.example.com/comments/abc123.json").mock(return_value=Response(200, json=HLS_POST_FIXTURE))
     result = await fetch_fresh_hls_url(CONFIG_WITH_PROXY, "t3_abc123")
     assert result is not None
     request = respx.calls.last.request
@@ -206,9 +188,7 @@ async def test_fetch_fresh_hls_url_uses_proxy():
 
 @respx.mock
 async def test_fetch_fresh_hls_url_returns_none_on_failure():
-    respx.get("https://www.reddit.com/comments/abc123.json").mock(
-        return_value=Response(500)
-    )
+    respx.get("https://www.reddit.com/comments/abc123.json").mock(return_value=Response(500))
     result = await fetch_fresh_hls_url(CONFIG, "t3_abc123")
     assert result is None
 
@@ -216,8 +196,6 @@ async def test_fetch_fresh_hls_url_returns_none_on_failure():
 @respx.mock
 async def test_fetch_fresh_hls_url_returns_none_when_no_video():
     fixture = [{"data": {"children": [{"data": {"media": None}}]}}]
-    respx.get("https://www.reddit.com/comments/abc123.json").mock(
-        return_value=Response(200, json=fixture)
-    )
+    respx.get("https://www.reddit.com/comments/abc123.json").mock(return_value=Response(200, json=fixture))
     result = await fetch_fresh_hls_url(CONFIG, "t3_abc123")
     assert result is None

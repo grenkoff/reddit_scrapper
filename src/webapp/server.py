@@ -18,8 +18,7 @@ from src.db import (
     save_setting,
     save_translated_image,
 )
-from src.explainer.gemini import _SYSTEM_PROMPT_DEFAULT
-from src.explainer.gemini import stream_explanation
+from src.explainer.gemini import _SYSTEM_PROMPT_DEFAULT, stream_explanation
 from src.explainer.image_processor import detect_image_text, overlay_translations
 
 logger = logging.getLogger(__name__)
@@ -242,9 +241,7 @@ def create_app(config: Config) -> FastAPI:
             return HTMLResponse("<h3>Unauthorized</h3>", status_code=401)
         await save_setting("system_prompt", prompt.strip())
         logger.info("System prompt updated (%d chars)", len(prompt))
-        return HTMLResponse(
-            f'<meta http-equiv="refresh" content="0;url=/admin/prompt?secret={secret}">'
-        )
+        return HTMLResponse(f'<meta http-equiv="refresh" content="0;url=/admin/prompt?secret={secret}">')
 
     @app.get("/api/image/{reddit_id}")
     async def image_endpoint(reddit_id: str):
@@ -287,7 +284,8 @@ def create_app(config: Config) -> FastAPI:
                         if image_url:
                             regions = await detect_image_text(image_url, config)
                             if regions:
-                                raw_resp = httpx.get(image_url, timeout=15, follow_redirects=True)
+                                async with httpx.AsyncClient(timeout=15) as img_client:
+                                    raw_resp = await img_client.get(image_url, follow_redirects=True)
                                 raw_resp.raise_for_status()
                                 image_data = overlay_translations(raw_resp.content, regions)
                                 await save_translated_image(reddit_id, image_data)

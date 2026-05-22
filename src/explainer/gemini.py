@@ -16,6 +16,7 @@ _SYSTEM_PROMPT_DEFAULT = (Path(__file__).parent / "system_prompt.txt").read_text
 async def _get_system_prompt() -> str:
     try:
         from src.db import get_setting
+
         prompt = await get_setting("system_prompt")
         return prompt if prompt else _SYSTEM_PROMPT_DEFAULT
     except Exception:
@@ -51,7 +52,10 @@ def _build_parts(post: dict, comments: list[dict] | None = None, skip_image_text
         lines.append(f"Текст: {post['selftext'][:2000]}")
     lines.append(f"Оценка: {post['score']} upvotes, {post['num_comments']} комментариев")
     if skip_image_text:
-        lines.append("\nВАЖНО: Раздел 4 (Текст с картинки) не включай — картинка с переведённым текстом уже показана пользователю отдельно.")
+        lines.append(
+            "\nВАЖНО: Раздел 4 (Текст с картинки) не включай —"
+            " картинка с переведённым текстом уже показана пользователю отдельно."
+        )
     if comments:
         lines.append("")
         lines.append("Топ комментарии (используй как контекст для понимания, не переводи):")
@@ -75,7 +79,9 @@ def _build_parts(post: dict, comments: list[dict] | None = None, skip_image_text
     return [*image_parts, text_part]
 
 
-def _build_payload(post: dict, system_prompt: str, comments: list[dict] | None = None, skip_image_text: bool = False) -> dict:
+def _build_payload(
+    post: dict, system_prompt: str, comments: list[dict] | None = None, skip_image_text: bool = False
+) -> dict:
     return {
         "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"role": "user", "parts": _build_parts(post, comments, skip_image_text=skip_image_text)}],
@@ -128,7 +134,9 @@ async def stream_explanation(config: Config, post: dict, skip_image_text: bool =
     )
     async with (
         httpx.AsyncClient(timeout=60) as client,
-        client.stream("POST", url, json=_build_payload(post, system_prompt, comments, skip_image_text=skip_image_text)) as response,
+        client.stream(
+            "POST", url, json=_build_payload(post, system_prompt, comments, skip_image_text=skip_image_text)
+        ) as response,
     ):
         if response.status_code != 200:
             body = await response.aread()

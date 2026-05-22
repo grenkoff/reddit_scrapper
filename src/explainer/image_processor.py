@@ -66,11 +66,7 @@ async def detect_image_text(image_url: str, config: Config) -> list[dict]:
 
 def _valid_region(r: dict) -> bool:
     return (
-        isinstance(r, dict)
-        and "translation" in r
-        and "box" in r
-        and isinstance(r["box"], list)
-        and len(r["box"]) == 4
+        isinstance(r, dict) and "translation" in r and "box" in r and isinstance(r["box"], list) and len(r["box"]) == 4
     )
 
 
