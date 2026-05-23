@@ -126,7 +126,7 @@ async def test_explain_stream_caches_only_complete_response():
         patch("src.webapp.server.get_explanation", new_callable=AsyncMock, return_value=None),
         patch("src.webapp.server.get_post", new_callable=AsyncMock, return_value=fake_post),
         patch("src.webapp.server.get_translated_image", new_callable=AsyncMock, return_value=None),
-        patch("src.webapp.server.detect_image_text", new_callable=AsyncMock, return_value=[]),
+        patch("src.webapp.server.generate_translated_image", new_callable=AsyncMock, return_value=None),
         patch("src.webapp.server.stream_explanation", side_effect=fake_stream),
         patch("src.webapp.server.save_explanation", new_callable=AsyncMock) as mock_save,
     ):
@@ -145,7 +145,7 @@ async def test_explain_stream_does_not_cache_truncated_response():
         patch("src.webapp.server.get_explanation", new_callable=AsyncMock, return_value=None),
         patch("src.webapp.server.get_post", new_callable=AsyncMock, return_value=fake_post),
         patch("src.webapp.server.get_translated_image", new_callable=AsyncMock, return_value=None),
-        patch("src.webapp.server.detect_image_text", new_callable=AsyncMock, return_value=[]),
+        patch("src.webapp.server.generate_translated_image", new_callable=AsyncMock, return_value=None),
         patch("src.webapp.server.stream_explanation", side_effect=fake_stream),
         patch("src.webapp.server.save_explanation", new_callable=AsyncMock) as mock_save,
     ):
