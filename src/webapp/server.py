@@ -186,8 +186,8 @@ def create_app(config: Config) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None)
 
     @app.get("/", response_class=HTMLResponse)
-    async def index() -> HTMLResponse:
-        return HTMLResponse(_MINI_APP_HTML, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+    async def index() -> str:
+        return _MINI_APP_HTML
 
     @app.get("/health")
     async def health() -> dict:
@@ -311,15 +311,7 @@ def create_app(config: Config) -> FastAPI:
                 await save_explanation(reddit_id, text)
             yield sse("done", "")
 
-        return StreamingResponse(
-            event_stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache, no-transform",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",
-            },
-        )
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     @app.get("/api/explain")
     async def explain(reddit_id: str) -> JSONResponse:
