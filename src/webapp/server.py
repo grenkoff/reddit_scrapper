@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -18,7 +19,7 @@ from src.db import (
     save_translated_image,
 )
 from src.explainer.gemini import _SYSTEM_PROMPT_DEFAULT, stream_explanation
-from src.explainer.image_processor import generate_translated_image
+from src.explainer.image_processor import detect_image_text, overlay_translations
 
 logger = logging.getLogger(__name__)
 
@@ -186,8 +187,8 @@ def create_app(config: Config) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None)
 
     @app.get("/", response_class=HTMLResponse)
-    async def index() -> HTMLResponse:
-        return HTMLResponse(_MINI_APP_HTML, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+    async def index() -> str:
+        return _MINI_APP_HTML
 
     @app.get("/health")
     async def health() -> dict:
@@ -279,8 +280,12 @@ def create_app(config: Config) -> FastAPI:
                     if not image_data:
                         image_url = post.get("content_url") or post.get("preview_url")
                         if image_url:
-                            image_data = await generate_translated_image(image_url, config)
-                            if image_data:
+                            regions = await detect_image_text(image_url, post, config)
+                            if regions:
+                                async with httpx.AsyncClient(timeout=15) as img_client:
+                                    raw_resp = await img_client.get(image_url, follow_redirects=True)
+                                raw_resp.raise_for_status()
+                                image_data = overlay_translations(raw_resp.content, regions)
                                 await save_translated_image(reddit_id, image_data)
                     if image_data:
                         yield sse("image", f"/api/image/{reddit_id}")
@@ -311,15 +316,7 @@ def create_app(config: Config) -> FastAPI:
                 await save_explanation(reddit_id, text)
             yield sse("done", "")
 
-        return StreamingResponse(
-            event_stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache, no-transform",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",
-            },
-        )
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     @app.get("/api/explain")
     async def explain(reddit_id: str) -> JSONResponse:
