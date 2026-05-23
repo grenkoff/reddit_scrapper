@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -18,7 +19,7 @@ from src.db import (
     save_translated_image,
 )
 from src.explainer.gemini import _SYSTEM_PROMPT_DEFAULT, stream_explanation
-from src.explainer.image_processor import generate_translated_image
+from src.explainer.image_processor import detect_image_text, overlay_translations
 
 logger = logging.getLogger(__name__)
 
@@ -279,8 +280,12 @@ def create_app(config: Config) -> FastAPI:
                     if not image_data:
                         image_url = post.get("content_url") or post.get("preview_url")
                         if image_url:
-                            image_data = await generate_translated_image(image_url, config)
-                            if image_data:
+                            regions = await detect_image_text(image_url, config)
+                            if regions:
+                                async with httpx.AsyncClient(timeout=15) as img_client:
+                                    raw_resp = await img_client.get(image_url, follow_redirects=True)
+                                raw_resp.raise_for_status()
+                                image_data = overlay_translations(raw_resp.content, regions)
                                 await save_translated_image(reddit_id, image_data)
                     if image_data:
                         yield sse("image", f"/api/image/{reddit_id}")
