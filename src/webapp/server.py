@@ -280,7 +280,7 @@ def create_app(config: Config) -> FastAPI:
                     if not image_data:
                         image_url = post.get("content_url") or post.get("preview_url")
                         if image_url:
-                            regions = await detect_image_text(image_url, config)
+                            regions = await detect_image_text(image_url, post, config)
                             if regions:
                                 async with httpx.AsyncClient(timeout=15) as img_client:
                                     raw_resp = await img_client.get(image_url, follow_redirects=True)
