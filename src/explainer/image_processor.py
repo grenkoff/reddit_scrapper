@@ -105,6 +105,43 @@ def _valid_region(r: dict) -> bool:
     )
 
 
+def _word_overlap(a: str, b: str) -> float:
+    """Jaccard similarity of word sets (case-insensitive)."""
+    wa, wb = set(a.lower().split()), set(b.lower().split())
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / max(len(wa), len(wb))
+
+
+def filter_image_text_blocks(text: str, image_regions: list[dict] | None, has_selftext: bool) -> str:
+    """
+    Strip blocks that contain text from the image overlay (already shown as a separate image).
+
+    Gemini often ignores the prompt and translates image text anyway in a format like:
+        original text
+        > *перевод*
+    This format is identical to section 3 (post text). To distinguish:
+    - If image_regions are available: strip blocks whose original line overlaps with any OCR'd region.
+    - If post has no selftext: section 3 cannot exist, so strip ALL non-bold translation blocks.
+    """
+    image_originals = [r.get("text", "").strip() for r in (image_regions or []) if r.get("text")]
+
+    blocks = text.split("\n\n")
+    filtered: list[str] = []
+    for block in blocks:
+        lines = block.split("\n")
+        if len(lines) >= 2 and lines[1].lstrip().startswith("> *") and not lines[0].lstrip().startswith("**"):
+            original = lines[0].strip()
+            # Strip if matches a known image region
+            if image_originals and any(_word_overlap(original, img) > 0.5 for img in image_originals):
+                continue
+            # Strip if no selftext exists (section 3 impossible → this must be section 4)
+            if not has_selftext:
+                continue
+        filtered.append(block)
+    return "\n\n".join(filtered)
+
+
 def _inpaint_regions(img_bgr: np.ndarray, regions_px: list[tuple[int, int, int, int]]) -> np.ndarray:
     """Use cv2.inpaint to reconstruct background where original text was."""
     h, w = img_bgr.shape[:2]
