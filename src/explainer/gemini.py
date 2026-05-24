@@ -22,9 +22,18 @@ _SECTION_4_PATTERN = re.compile(
 )
 
 
+_SECTION_4_FORBID_REPLACEMENT = (
+    "\n\n4) Текст с картинки\n"
+    "СТРОГИЙ ЗАПРЕТ: НЕ переводи, НЕ цитируй и НЕ упоминай никакой текст, "
+    "который виден на картинке/гифке. Картинка с переведённым текстом уже показана "
+    "пользователю отдельно. Заканчивай свой ответ сразу после раздела 3 (или раздела 2, "
+    "если раздела 3 нет). Любое нарушение этого правила приведёт к дублированию."
+)
+
+
 def _strip_section_4(prompt: str) -> str:
-    """Remove section 4 (Текст с картинки) when image overlay is shown separately."""
-    return _SECTION_4_PATTERN.sub("\n", prompt, count=1)
+    """Replace section 4 with a forbid instruction when image overlay is shown separately."""
+    return _SECTION_4_PATTERN.sub(_SECTION_4_FORBID_REPLACEMENT, prompt, count=1)
 
 
 async def _get_system_prompt() -> str:
