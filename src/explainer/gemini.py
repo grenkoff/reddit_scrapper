@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -11,6 +12,19 @@ from src.config import Config
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT_DEFAULT = (Path(__file__).parent / "system_prompt.txt").read_text(encoding="utf-8").strip()
+
+# Matches "4) Текст с картинки …" up to (but not including) the next numbered
+# section "5)" / "6)" / … OR the unnumbered final paragraph that starts with a
+# capitalized Russian word (e.g. "Пиши только на русском …").
+_SECTION_4_PATTERN = re.compile(
+    r"\n\n4\) Текст с картинки.*?(?=\n\n\d\)|\n\n[А-ЯЁ])",
+    flags=re.DOTALL,
+)
+
+
+def _strip_section_4(prompt: str) -> str:
+    """Remove section 4 (Текст с картинки) when image overlay is shown separately."""
+    return _SECTION_4_PATTERN.sub("\n", prompt, count=1)
 
 
 async def _get_system_prompt() -> str:
@@ -42,7 +56,7 @@ def _fetch_image(url: str) -> dict | None:
         return None
 
 
-def _build_parts(post: dict, comments: list[dict] | None = None, skip_image_text: bool = False) -> list[dict]:
+def _build_parts(post: dict, comments: list[dict] | None = None) -> list[dict]:
     lines = [
         f"Subreddit: r/{post['subreddit']}",
         f"Заголовок: {post['title']}",
@@ -51,11 +65,6 @@ def _build_parts(post: dict, comments: list[dict] | None = None, skip_image_text
     if post.get("selftext"):
         lines.append(f"Текст: {post['selftext'][:2000]}")
     lines.append(f"Оценка: {post['score']} upvotes, {post['num_comments']} комментариев")
-    if skip_image_text:
-        lines.append(
-            "\nВАЖНО: Раздел 4 (Текст с картинки) не включай —"
-            " картинка с переведённым текстом уже показана пользователю отдельно."
-        )
     if comments:
         lines.append("")
         lines.append("Топ комментарии (используй как контекст для понимания, не переводи):")
@@ -79,12 +88,10 @@ def _build_parts(post: dict, comments: list[dict] | None = None, skip_image_text
     return [*image_parts, text_part]
 
 
-def _build_payload(
-    post: dict, system_prompt: str, comments: list[dict] | None = None, skip_image_text: bool = False
-) -> dict:
+def _build_payload(post: dict, system_prompt: str, comments: list[dict] | None = None) -> dict:
     return {
         "system_instruction": {"parts": [{"text": system_prompt}]},
-        "contents": [{"role": "user", "parts": _build_parts(post, comments, skip_image_text=skip_image_text)}],
+        "contents": [{"role": "user", "parts": _build_parts(post, comments)}],
         "generationConfig": {
             "maxOutputTokens": 2048,
             "temperature": 0.4,
@@ -128,15 +135,15 @@ async def stream_explanation(config: Config, post: dict, skip_image_text: bool =
     """Stream explanation chunks from Gemini SSE endpoint."""
     comments = await _safe_fetch_comments(config, post)
     system_prompt = await _get_system_prompt()
+    if skip_image_text:
+        system_prompt = _strip_section_4(system_prompt)
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"gemini-3.1-flash-lite:streamGenerateContent?alt=sse&key={config.gemini_api_key}"
     )
     async with (
         httpx.AsyncClient(timeout=60) as client,
-        client.stream(
-            "POST", url, json=_build_payload(post, system_prompt, comments, skip_image_text=skip_image_text)
-        ) as response,
+        client.stream("POST", url, json=_build_payload(post, system_prompt, comments)) as response,
     ):
         if response.status_code != 200:
             body = await response.aread()
