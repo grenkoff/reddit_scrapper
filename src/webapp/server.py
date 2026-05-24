@@ -19,7 +19,7 @@ from src.db import (
     save_translated_image,
 )
 from src.explainer.gemini import _SYSTEM_PROMPT_DEFAULT, stream_explanation
-from src.explainer.image_processor import detect_image_text, overlay_translations
+from src.explainer.image_processor import detect_image_text, filter_image_text_blocks, overlay_translations
 
 logger = logging.getLogger(__name__)
 
@@ -274,18 +274,19 @@ def create_app(config: Config) -> FastAPI:
 
             # Try image text translation for single-image posts
             skip_image_text = False
+            image_regions: list[dict] | None = None
             if post.get("post_type") == "image":
                 try:
                     image_data = await get_translated_image(reddit_id)
                     if not image_data:
                         image_url = post.get("content_url") or post.get("preview_url")
                         if image_url:
-                            regions = await detect_image_text(image_url, post, config)
-                            if regions:
+                            image_regions = await detect_image_text(image_url, post, config)
+                            if image_regions:
                                 async with httpx.AsyncClient(timeout=15) as img_client:
                                     raw_resp = await img_client.get(image_url, follow_redirects=True)
                                 raw_resp.raise_for_status()
-                                image_data = overlay_translations(raw_resp.content, regions)
+                                image_data = overlay_translations(raw_resp.content, image_regions)
                                 await save_translated_image(reddit_id, image_data)
                     if image_data:
                         yield sse("image", f"/api/image/{reddit_id}")
@@ -303,9 +304,20 @@ def create_app(config: Config) -> FastAPI:
 
             full_text = ""
             try:
-                async for chunk in stream_explanation(config, post, skip_image_text=skip_image_text):
-                    full_text += chunk
-                    yield sse("chunk", chunk)
+                if skip_image_text:
+                    # Buffer the whole response, filter out blocks that duplicate the image overlay,
+                    # then emit the cleaned text as a single chunk. Gemini ignores prompt-level
+                    # forbidding, so server-side filtering is the reliable fix.
+                    async for chunk in stream_explanation(config, post, skip_image_text=True):
+                        full_text += chunk
+                    full_text = filter_image_text_blocks(
+                        full_text, image_regions, has_selftext=bool(post.get("selftext"))
+                    )
+                    yield sse("chunk", full_text)
+                else:
+                    async for chunk in stream_explanation(config, post, skip_image_text=False):
+                        full_text += chunk
+                        yield sse("chunk", chunk)
             except Exception as e:
                 logger.warning("Gemini stream error for %s: %s", reddit_id, e)
                 yield sse("error", "Не удалось сгенерировать объяснение.")
