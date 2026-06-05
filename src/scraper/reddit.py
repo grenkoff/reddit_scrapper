@@ -116,8 +116,15 @@ async def fetch_top_posts(config: Config) -> list[dict]:
         url = REDDIT_URL
 
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        response = await client.get(url, params=params, headers=headers)
-        response.raise_for_status()
+        for attempt in range(3):
+            response = await client.get(url, params=params, headers=headers)
+            if response.status_code in (403, 429) and attempt < 2:
+                retry_after = int(response.headers.get("Retry-After", (attempt + 1) * 10))
+                logger.info("Reddit %d fetching posts, retrying in %ds", response.status_code, retry_after)
+                await asyncio.sleep(retry_after)
+                continue
+            response.raise_for_status()
+            break
 
     children = response.json().get("data", {}).get("children", [])
     posts = []
