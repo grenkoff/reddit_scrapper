@@ -1,190 +1,198 @@
 import asyncio
-import html as _html
 import logging
-import time
+import re
 from datetime import UTC, datetime
 
 import httpx
+from bs4 import BeautifulSoup
 
 from src.config import Config
 
 logger = logging.getLogger(__name__)
 
-REDDIT_URL = "https://www.reddit.com/.json"
-REDDIT_OAUTH_URL = "https://oauth.reddit.com/.json"
+# Reddit closed anonymous access to its .json API (403 from any IP), so we scrape
+# the old.reddit.com HTML instead — it still serves listings/comments without auth.
+OLD_REDDIT = "https://old.reddit.com"
+# old.reddit blocks bot-looking User-Agents, so always present as a browser.
+BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+_GALLERY_IMG_RE = re.compile(r"https://(?:preview|i)\.redd\.it/[A-Za-z0-9._-]+\.(?:jpg|jpeg|png|webp|gif)")
 
-_oauth_token: str | None = None
-_oauth_token_expires: float = 0.0
+
+def _headers() -> dict:
+    return {
+        "User-Agent": BROWSER_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
 
 
-async def _get_oauth_token(config: Config) -> str:
-    global _oauth_token, _oauth_token_expires
-    if _oauth_token and time.monotonic() < _oauth_token_expires - 60:
-        return _oauth_token
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.post(
-            "https://www.reddit.com/api/v1/access_token",
-            auth=(config.reddit_client_id, config.reddit_client_secret),
-            data={"grant_type": "client_credentials"},
-            headers={"User-Agent": config.reddit_user_agent},
-        )
+async def _get_with_retry(client: httpx.AsyncClient, url: str, params: dict, *, label: str) -> httpx.Response:
+    """GET with retry/backoff on old.reddit's 403/429 rate-limiting."""
+    for attempt in range(3):
+        response = await client.get(url, params=params, headers=_headers())
+        if response.status_code in (403, 429) and attempt < 2:
+            retry_after = int(response.headers.get("Retry-After", (attempt + 1) * 5))
+            logger.info("Reddit %d on %s, retrying in %ds", response.status_code, label, retry_after)
+            await asyncio.sleep(retry_after)
+            continue
         response.raise_for_status()
-    data = response.json()
-    _oauth_token = data["access_token"]
-    _oauth_token_expires = time.monotonic() + data["expires_in"]
-    logger.info("Reddit OAuth token acquired, expires in %ds", data["expires_in"])
-    return _oauth_token
+        return response
+    return response
 
 
-def _detect_post_type(data: dict) -> str:
-    if data.get("is_gallery"):
+def _detect_post_type(content_url: str | None, domain: str = "") -> str:
+    url = (content_url or "").lower()
+    if "/gallery/" in url:
         return "gallery"
-    if data.get("is_video"):
+    if "v.redd.it" in url or domain == "v.redd.it":
         return "video"
-    url = data.get("url", "")
-    if data.get("post_hint") == "animated_image" or url.lower().endswith(".gif"):
+    if url.endswith((".gif", ".gifv")) or "gfycat.com" in url or "redgifs.com" in url:
         return "gif"
-    if data.get("post_hint") == "image" or url.startswith("https://i.redd.it"):
+    if "i.redd.it" in url or url.endswith((".jpg", ".jpeg", ".png", ".webp")):
         return "image"
-    if data.get("selftext"):
+    if domain.startswith("self."):
         return "text"
     return "link"
 
 
-def _extract_media_urls(data: dict) -> list[str] | None:
-    if not data.get("is_gallery"):
+def _abs_url(url: str | None) -> str | None:
+    if not url:
         return None
-    items = data.get("gallery_data", {}).get("items", [])
-    metadata = data.get("media_metadata", {})
-    urls = []
-    for item in items:
-        media_id = item.get("media_id")
-        if media_id and media_id in metadata:
-            url = metadata[media_id].get("s", {}).get("u", "")
-            if url:
-                urls.append(url.replace("&amp;", "&"))
-    return urls or None
+    if url.startswith("//"):
+        return "https:" + url
+    return url
 
 
-def _parse_post(data: dict) -> dict:
-    post_type = _detect_post_type(data)
-    raw_preview = data.get("preview", {}).get("images", [{}])[0].get("source", {}).get("url", "")
+def _parse_thing(thing) -> dict | None:
+    """Parse one old.reddit ``div.thing`` link element into a post dict."""
+    if thing.get("data-promoted") == "true":
+        return None
+    fullname = thing.get("data-fullname", "")
+    if not fullname.startswith("t3_"):
+        return None
+    author = thing.get("data-author") or "[deleted]"
+    if author == "[deleted]":
+        return None
+
+    content_url = thing.get("data-url")
+    domain = thing.get("data-domain", "")
+    permalink = thing.get("data-permalink", "")
+    post_type = _detect_post_type(content_url, domain)
+
+    title_tag = thing.select_one("a.title")
+    title = title_tag.get_text(strip=True) if title_tag else ""
+
+    ts = thing.get("data-timestamp")
+    created = datetime.fromtimestamp(int(ts) / 1000, tz=UTC) if ts else datetime.now(UTC)
+
+    video_url = hls_url = None
+    if post_type == "video" and content_url:
+        vid = content_url.rstrip("/").rsplit("/", 1)[-1]
+        hls_url = f"https://v.redd.it/{vid}/HLSPlaylist.m3u8"
+        video_url = f"https://v.redd.it/{vid}/DASH_720.mp4"
+
+    selftext = None
+    if post_type == "text":
+        md = thing.select_one("div.usertext-body div.md")
+        if md:
+            selftext = md.get_text("\n", strip=True) or None
+
+    preview_url = None
+    thumb = thing.select_one("a.thumbnail img")
+    if thumb:
+        src = _abs_url(thumb.get("src"))
+        if src and src.startswith("http"):
+            preview_url = src
+
     return {
-        "reddit_id": f"t3_{data['id']}",
-        "subreddit": data["subreddit"],
-        "title": data["title"],
-        "author": data.get("author", "[deleted]"),
-        "url": f"https://reddit.com{data['permalink']}",
-        "content_url": data.get("url"),
-        "selftext": data.get("selftext") or None,
-        "score": data.get("score", 0),
-        "num_comments": data.get("num_comments", 0),
+        "reddit_id": fullname,
+        "subreddit": thing.get("data-subreddit", ""),
+        "title": title,
+        "author": author,
+        "url": f"https://reddit.com{permalink}",
+        "content_url": content_url,
+        "selftext": selftext,
+        "score": int(thing.get("data-score") or 0),
+        "num_comments": int(thing.get("data-comments-count") or 0),
         "post_type": post_type,
-        "is_nsfw": data.get("over_18", False),
-        "media_urls": _extract_media_urls(data),
-        "created_utc": datetime.fromtimestamp(data.get("created_utc", 0), tz=UTC).isoformat(),
-        "preview_url": _html.unescape(raw_preview) if raw_preview else None,
-        "video_url": (
-            (data.get("media") or {}).get("reddit_video", {}).get("fallback_url")
-            or (data.get("secure_media") or {}).get("reddit_video", {}).get("fallback_url")
-        )
-        or None,
-        "hls_url": (
-            (data.get("media") or {}).get("reddit_video", {}).get("hls_url")
-            or (data.get("secure_media") or {}).get("reddit_video", {}).get("hls_url")
-        )
-        or None,
+        "is_nsfw": thing.get("data-nsfw") == "true",
+        "media_urls": None,  # filled in for galleries via _fetch_gallery_images
+        "created_utc": created.isoformat(),
+        "preview_url": preview_url,
+        "video_url": video_url,
+        "hls_url": hls_url,
     }
+
+
+async def _fetch_gallery_images(client: httpx.AsyncClient, post: dict) -> list[str] | None:
+    """Fetch a gallery post's page and extract its image URLs."""
+    permalink = post["url"].removeprefix("https://reddit.com")
+    try:
+        response = await _get_with_retry(client, f"{OLD_REDDIT}{permalink}", {}, label=f"gallery {post['reddit_id']}")
+    except Exception:
+        logger.warning("Failed to fetch gallery images for %s", post["reddit_id"])
+        return None
+    seen: list[str] = []
+    for match in _GALLERY_IMG_RE.findall(response.text):
+        if match not in seen:
+            seen.append(match)
+    return seen[:20] or None
 
 
 async def fetch_top_posts(config: Config) -> list[dict]:
-    params = {"limit": config.posts_limit, "raw_json": 1, "sort": "top"}
-    headers = {
-        "User-Agent": config.reddit_user_agent,
-        "Accept": "application/json",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+    url = f"{OLD_REDDIT}/top/"
+    params = {"t": "day", "limit": config.posts_limit}
 
-    if config.reddit_proxy_url and config.reddit_proxy_secret:
-        url = config.reddit_proxy_url.rstrip("/") + "/.json"
-        headers["X-Proxy-Secret"] = config.reddit_proxy_secret
-    elif config.reddit_client_id and config.reddit_client_secret:
-        token = await _get_oauth_token(config)
-        headers["Authorization"] = f"Bearer {token}"
-        url = REDDIT_OAUTH_URL
-    else:
-        url = REDDIT_URL
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True, http2=True) as client:
+        response = await _get_with_retry(client, url, params, label="top posts")
+        soup = BeautifulSoup(response.text, "html.parser")
+        posts = [post for thing in soup.select("div.thing") if (post := _parse_thing(thing))]
 
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        response = await client.get(url, params=params, headers=headers)
-        response.raise_for_status()
+        for post in posts:
+            if post["post_type"] == "gallery":
+                # Space out per-post page fetches so old.reddit doesn't rate-limit the burst.
+                await asyncio.sleep(2)
+                post["media_urls"] = await _fetch_gallery_images(client, post)
 
-    children = response.json().get("data", {}).get("children", [])
-    posts = []
-    for child in children:
-        d = child["data"]
-        if d.get("removed_by_category") or d.get("author") == "[deleted]" or d.get("selftext") == "[removed]":
-            logger.debug("Skipping removed/deleted post %s", d.get("id"))
-            continue
-        posts.append(_parse_post(d))
     logger.info("Fetched %d posts from Reddit", len(posts))
     return posts
 
 
-async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list[dict]:
-    """Fetch top-level comments sorted by score."""
-    reddit_id = post["reddit_id"].removeprefix("t3_")
-    params = {"raw_json": 1, "sort": "top", "limit": 20}
-    headers = {
-        "User-Agent": config.reddit_user_agent,
-        "Accept": "application/json",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+def _parse_comment_score(thing) -> int:
+    score_tag = thing.select_one("span.score.unvoted")
+    if score_tag and score_tag.get("title"):
+        try:
+            return int(score_tag["title"].split()[0])
+        except (ValueError, IndexError):
+            pass
+    return 0
 
-    if config.reddit_proxy_url and config.reddit_proxy_secret:
-        url = f"{config.reddit_proxy_url.rstrip('/')}/r/{post['subreddit']}/comments/{reddit_id}.json"
-        headers["X-Proxy-Secret"] = config.reddit_proxy_secret
-    else:
-        url = f"https://www.reddit.com/r/{post['subreddit']}/comments/{reddit_id}.json"
+
+async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list[dict]:
+    """Fetch top-level comments sorted by score from old.reddit HTML."""
+    permalink = post["url"].removeprefix("https://reddit.com")
+    url = f"{OLD_REDDIT}{permalink}"
+    params = {"sort": "top", "limit": 50}
 
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            for attempt in range(3):
-                response = await client.get(url, params=params, headers=headers)
-                if response.status_code in (403, 429) and attempt < 2:
-                    retry_after = int(response.headers.get("Retry-After", (attempt + 1) * 10))
-                    logger.info(
-                        "Reddit %d for comments %s, retrying in %ds",
-                        response.status_code,
-                        reddit_id,
-                        retry_after,
-                    )
-                    await asyncio.sleep(retry_after)
-                    continue
-                response.raise_for_status()
-                break
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True, http2=True) as client:
+            response = await _get_with_retry(client, url, params, label=f"comments {post['reddit_id']}")
 
-        data = response.json()
-        if not isinstance(data, list) or len(data) < 2:
-            return []
-
-        children = data[1].get("data", {}).get("children", [])
+        soup = BeautifulSoup(response.text, "html.parser")
         comments = []
-        for child in children:
-            if child.get("kind") != "t1":
+        # Direct children of the main comment listing = top-level comments only.
+        for thing in soup.select("div.commentarea > div.sitetable > div.comment"):
+            classes = thing.get("class", [])
+            if "stickied" in classes or "deleted" in classes:
                 continue
-            c = child["data"]
-            if c.get("stickied"):
+            author = thing.get("data-author")
+            if not author or author == "[deleted]":
                 continue
-            if c.get("author") in ("[deleted]", None) or c.get("body") in ("[removed]", "[deleted]", ""):
+            body_tag = thing.select_one("div.entry div.usertext-body div.md")
+            body = body_tag.get_text("\n", strip=True) if body_tag else ""
+            if body in ("", "[removed]", "[deleted]"):
                 continue
-            comments.append(
-                {
-                    "author": c.get("author", "[deleted]"),
-                    "body": c.get("body", ""),
-                    "score": c.get("score", 0),
-                }
-            )
+            comments.append({"author": author, "body": body, "score": _parse_comment_score(thing)})
 
         comments.sort(key=lambda x: x["score"], reverse=True)
         comments = comments[:limit]
@@ -196,39 +204,9 @@ async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list
 
 
 async def fetch_fresh_hls_url(config: Config, reddit_id: str) -> str | None:
-    """Fetch a fresh HLS URL for a Reddit video post (auth token may have expired)."""
-    post_id = reddit_id.removeprefix("t3_")
-    headers = {
-        "User-Agent": config.reddit_user_agent,
-        "Accept": "application/json",
-    }
-    if config.reddit_proxy_url and config.reddit_proxy_secret:
-        url = f"{config.reddit_proxy_url.rstrip('/')}/comments/{post_id}.json"
-        headers["X-Proxy-Secret"] = config.reddit_proxy_secret
-    else:
-        url = f"https://www.reddit.com/comments/{post_id}.json"
+    """Kept for API compatibility.
 
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            for attempt in range(2):
-                response = await client.get(url, params={"raw_json": 1, "limit": 1}, headers=headers)
-                if response.status_code == 429 and attempt == 0:
-                    retry_after = int(response.headers.get("Retry-After", 10))
-                    logger.info("Reddit 429 refreshing HLS for %s, retrying in %ds", reddit_id, retry_after)
-                    await asyncio.sleep(retry_after)
-                    continue
-                response.raise_for_status()
-                break
-        data = response.json()
-        post_data = data[0]["data"]["children"][0]["data"]
-        hls_url = (post_data.get("media") or {}).get("reddit_video", {}).get("hls_url") or (
-            post_data.get("secure_media") or {}
-        ).get("reddit_video", {}).get("hls_url")
-        if hls_url:
-            logger.info("Refreshed HLS URL for %s", reddit_id)
-        else:
-            logger.warning("No HLS URL found for %s — video will have no audio", reddit_id)
-        return hls_url
-    except Exception:
-        logger.warning("Could not refresh HLS URL for %s, falling back to stored", reddit_id, exc_info=True)
-        return None
+    The HLS URL is now a static path derived at parse time (no expiring token),
+    so there is nothing to refresh — callers fall back to the stored hls_url.
+    """
+    return None
