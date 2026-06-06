@@ -15,9 +15,7 @@ from src.scraper.reddit import (
 LISTING_HTML = Path("tests/fixtures/old_reddit_top.html").read_text()
 COMMENTS_HTML = Path("tests/fixtures/old_reddit_comments.html").read_text()
 
-CONFIG = Config(
-    telegram_bot_token="test", telegram_chat_id="test", database_url="postgresql://test", posts_limit=25
-)
+CONFIG = Config(telegram_bot_token="test", telegram_chat_id="test", database_url="postgresql://test", posts_limit=25)
 
 SAMPLE_POST = {
     "reddit_id": "t3_abc123",

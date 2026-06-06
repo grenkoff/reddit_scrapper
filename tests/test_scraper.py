@@ -11,9 +11,7 @@ LISTING_HTML = Path("tests/fixtures/old_reddit_top.html").read_text()
 SOUP = BeautifulSoup(LISTING_HTML, "html.parser")
 THINGS = {t.get("data-fullname"): t for t in SOUP.select("div.thing")}
 
-CONFIG = Config(
-    telegram_bot_token="test", telegram_chat_id="test", database_url="postgresql://test", posts_limit=25
-)
+CONFIG = Config(telegram_bot_token="test", telegram_chat_id="test", database_url="postgresql://test", posts_limit=25)
 
 
 @respx.mock

@@ -14,9 +14,7 @@ logger = logging.getLogger(__name__)
 # the old.reddit.com HTML instead — it still serves listings/comments without auth.
 OLD_REDDIT = "https://old.reddit.com"
 # old.reddit blocks bot-looking User-Agents, so always present as a browser.
-BROWSER_UA = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
+BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 _GALLERY_IMG_RE = re.compile(r"https://(?:preview|i)\.redd\.it/[A-Za-z0-9._-]+\.(?:jpg|jpeg|png|webp|gif)")
 
 
