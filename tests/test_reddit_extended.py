@@ -76,16 +76,24 @@ async def test_fetch_top_comments_returns_empty_on_error():
 
 
 @respx.mock
-async def test_fetch_gallery_images_extracts_unique_urls():
-    html = (
-        '<a href="https://preview.redd.it/aaa.jpg">x</a>'
-        " text https://preview.redd.it/bbb.png more"
-        ' <a href="https://preview.redd.it/aaa.jpg">dup</a>'
+async def test_fetch_gallery_images_picks_largest_signed_variant():
+    # Unsigned thumbnail (no s=) is skipped; the largest signed width wins even when a
+    # smaller signed variant appears first; &amp; decoded; i.redd.it kept without a signature.
+    page_html = (
+        '<a href="https://preview.redd.it/aaa.jpg?width=108&amp;s=SIG_SMALL">small</a>'
+        '<a href="https://preview.redd.it/aaa.jpg?width=140&amp;auto=webp">unsigned thumb</a>'
+        '<a href="https://preview.redd.it/aaa.jpg?width=1170&amp;s=SIG_BIG">big</a>'
+        " text https://preview.redd.it/bbb.png?s=SIG3 more"
+        '<a href="https://i.redd.it/ccc.jpg">direct</a>'
     )
-    respx.get(COMMENTS_URL).mock(return_value=Response(200, html=html))
+    respx.get(COMMENTS_URL).mock(return_value=Response(200, html=page_html))
     async with httpx.AsyncClient() as client:
         urls = await _fetch_gallery_images(client, SAMPLE_POST)
-    assert urls == ["https://preview.redd.it/aaa.jpg", "https://preview.redd.it/bbb.png"]
+    assert urls == [
+        "https://preview.redd.it/aaa.jpg?width=1170&s=SIG_BIG",
+        "https://preview.redd.it/bbb.png?s=SIG3",
+        "https://i.redd.it/ccc.jpg",
+    ]
 
 
 @respx.mock
