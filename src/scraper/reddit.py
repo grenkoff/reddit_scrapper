@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 import re
 from datetime import UTC, datetime
@@ -15,7 +16,9 @@ logger = logging.getLogger(__name__)
 OLD_REDDIT = "https://old.reddit.com"
 # old.reddit blocks bot-looking User-Agents, so always present as a browser.
 BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-_GALLERY_IMG_RE = re.compile(r"https://(?:preview|i)\.redd\.it/[A-Za-z0-9._-]+\.(?:jpg|jpeg|png|webp|gif)")
+# Capture the full URL including the signed query string — preview.redd.it images
+# return 403 without their `?...&s=<sig>` signature.
+_GALLERY_IMG_RE = re.compile(r"""https://(?:preview|i)\.redd\.it/[^\s"'<>]+\.(?:jpg|jpeg|png|webp|gif)[^\s"'<>]*""")
 
 
 def _headers() -> dict:
@@ -132,11 +135,23 @@ async def _fetch_gallery_images(client: httpx.AsyncClient, post: dict) -> list[s
     except Exception:
         logger.warning("Failed to fetch gallery images for %s", post["reddit_id"])
         return None
-    seen: list[str] = []
+    # preview.redd.it serves several variants per image: unsigned thumbnails (no `s=`,
+    # which 403) plus signed copies at different widths. Keep the largest signed variant.
+    order: list[str] = []
+    best: dict[str, tuple[int, str]] = {}
     for match in _GALLERY_IMG_RE.findall(response.text):
-        if match not in seen:
-            seen.append(match)
-    return seen[:20] or None
+        url = html.unescape(match)
+        if "preview.redd.it" in url and not re.search(r"[?&]s=", url):
+            continue
+        path = url.split("?", 1)[0]
+        width_match = re.search(r"[?&]width=(\d+)", url)
+        width = int(width_match.group(1)) if width_match else 0
+        if path not in best:
+            order.append(path)
+            best[path] = (width, url)
+        elif width > best[path][0]:
+            best[path] = (width, url)
+    return [best[path][1] for path in order][:20] or None
 
 
 async def fetch_top_posts(config: Config) -> list[dict]:
