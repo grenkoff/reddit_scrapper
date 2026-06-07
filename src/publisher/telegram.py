@@ -552,7 +552,13 @@ async def publish_comment(
     reply_to_message_id: int,
 ) -> int | None:
     """Send one comment as reply in the discussion group."""
-    media_url, clean_body, media_type = _extract_media_url(comment["body"])
+    # Comments scraped from old.reddit carry the media URL directly (the body is already
+    # clean text); fall back to parsing markdown bodies from other sources.
+    if comment.get("media_url"):
+        media_url, media_type = comment["media_url"], comment.get("media_type")
+        clean_body = comment["body"]
+    else:
+        media_url, clean_body, media_type = _extract_media_url(comment["body"])
     caption = _format_comment(comment, body_override=clean_body)
 
     async with httpx.AsyncClient(timeout=None) as client:
