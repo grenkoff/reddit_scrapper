@@ -16,9 +16,10 @@ logger = logging.getLogger(__name__)
 OLD_REDDIT = "https://old.reddit.com"
 # old.reddit blocks bot-looking User-Agents, so always present as a browser.
 BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-# Capture the full URL including the signed query string — preview.redd.it images
-# return 403 without their `?...&s=<sig>` signature.
-_GALLERY_IMG_RE = re.compile(r"""https://(?:preview|i)\.redd\.it/[^\s"'<>]+\.(?:jpg|jpeg|png|webp|gif)[^\s"'<>]*""")
+# Gallery images live in the post's gallery tiles. Selecting these classes scopes
+# extraction to the actual gallery, excluding comment images, the post thumbnail, and
+# "read next" suggestions that a whole-page scan would wrongly pull in.
+_GALLERY_TILE_SELECTOR = "a.gallery-item-thumbnail-link[href], img.gallery-tile-content[src]"
 
 
 def _headers() -> dict:
@@ -127,20 +128,20 @@ def _parse_thing(thing) -> dict | None:
     }
 
 
-async def _fetch_gallery_images(client: httpx.AsyncClient, post: dict) -> list[str] | None:
-    """Fetch a gallery post's page and extract its image URLs."""
-    permalink = post["url"].removeprefix("https://reddit.com")
-    try:
-        response = await _get_with_retry(client, f"{OLD_REDDIT}{permalink}", {}, label=f"gallery {post['reddit_id']}")
-    except Exception:
-        logger.warning("Failed to fetch gallery images for %s", post["reddit_id"])
-        return None
-    # preview.redd.it serves several variants per image: unsigned thumbnails (no `s=`,
-    # which 403) plus signed copies at different widths. Keep the largest signed variant.
+def _select_gallery_urls(page_html: str) -> list[str] | None:
+    """Pick the gallery's image URLs from a post page's HTML.
+
+    Each tile exposes the image at several widths via its link and thumbnail; preview.redd.it
+    needs its `s=` signature (unsigned variants 403), so keep the largest signed variant per image.
+    """
+    soup = BeautifulSoup(page_html, "html.parser")
     order: list[str] = []
     best: dict[str, tuple[int, str]] = {}
-    for match in _GALLERY_IMG_RE.findall(response.text):
-        url = html.unescape(match)
+    for el in soup.select(_GALLERY_TILE_SELECTOR):
+        raw = el.get("href") or el.get("src")
+        if not raw:
+            continue
+        url = html.unescape(raw)
         if "preview.redd.it" in url and not re.search(r"[?&]s=", url):
             continue
         path = url.split("?", 1)[0]
@@ -152,6 +153,17 @@ async def _fetch_gallery_images(client: httpx.AsyncClient, post: dict) -> list[s
         elif width > best[path][0]:
             best[path] = (width, url)
     return [best[path][1] for path in order][:20] or None
+
+
+async def _fetch_gallery_images(client: httpx.AsyncClient, post: dict) -> list[str] | None:
+    """Fetch a gallery post's page and extract its image URLs."""
+    permalink = post["url"].removeprefix("https://reddit.com")
+    try:
+        response = await _get_with_retry(client, f"{OLD_REDDIT}{permalink}", {}, label=f"gallery {post['reddit_id']}")
+    except Exception:
+        logger.warning("Failed to fetch gallery images for %s", post["reddit_id"])
+        return None
+    return _select_gallery_urls(response.text)
 
 
 async def fetch_top_posts(config: Config) -> list[dict]:

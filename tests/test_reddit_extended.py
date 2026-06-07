@@ -115,24 +115,32 @@ async def test_fetch_top_comments_text_only_has_no_media():
 
 
 @respx.mock
-async def test_fetch_gallery_images_picks_largest_signed_variant():
-    # Unsigned thumbnail (no s=) is skipped; the largest signed width wins even when a
-    # smaller signed variant appears first; &amp; decoded; i.redd.it kept without a signature.
+async def test_fetch_gallery_images_scopes_to_tiles_and_picks_largest_signed():
+    # Only the gallery tiles count: the largest signed width per image wins, unsigned variants
+    # are skipped, and images from comments / "read next" / thumbnail must NOT leak in.
     page_html = (
-        '<a href="https://preview.redd.it/aaa.jpg?width=108&amp;s=SIG_SMALL">small</a>'
-        '<a href="https://preview.redd.it/aaa.jpg?width=140&amp;auto=webp">unsigned thumb</a>'
-        '<a href="https://preview.redd.it/aaa.jpg?width=1170&amp;s=SIG_BIG">big</a>'
-        " text https://preview.redd.it/bbb.png?s=SIG3 more"
-        '<a href="https://i.redd.it/ccc.jpg">direct</a>'
+        '<div class="sitetable linklisting"><div class="thing">'
+        '<div class="media-preview-content">'
+        '<a class="gallery-item-thumbnail-link" href="https://preview.redd.it/aaa.jpg?width=1170&amp;s=BIG">'
+        '<img class="gallery-tile-content" src="https://preview.redd.it/aaa.jpg?width=108&amp;s=SMALL"/></a>'
+        '<a class="gallery-item-thumbnail-link" href="https://preview.redd.it/unsigned.jpg?width=140">'
+        '<img class="gallery-tile-content" src="https://preview.redd.it/bbb.jpg?width=960&amp;s=B"/></a>'
+        "</div></div></div>"
+        '<a class="thumbnail"><img src="https://preview.redd.it/THUMB.jpg?s=T"/></a>'
+        '<div class="commentarea"><div class="sitetable"><div class="comment"><div class="md">'
+        '<p><a href="https://preview.redd.it/COMMENT.jpg?s=CMT">&lt;image&gt;</a></p></div></div></div></div>'
     )
     respx.get(COMMENTS_URL).mock(return_value=Response(200, html=page_html))
     async with httpx.AsyncClient() as client:
         urls = await _fetch_gallery_images(client, SAMPLE_POST)
     assert urls == [
-        "https://preview.redd.it/aaa.jpg?width=1170&s=SIG_BIG",
-        "https://preview.redd.it/bbb.png?s=SIG3",
-        "https://i.redd.it/ccc.jpg",
+        "https://preview.redd.it/aaa.jpg?width=1170&s=BIG",
+        "https://preview.redd.it/bbb.jpg?width=960&s=B",
     ]
+    joined = " ".join(urls)
+    assert "COMMENT.jpg" not in joined
+    assert "THUMB.jpg" not in joined
+    assert "unsigned.jpg" not in joined
 
 
 @respx.mock
