@@ -183,6 +183,27 @@ def _parse_comment_score(thing) -> int:
     return 0
 
 
+def _extract_comment_media(md_tag) -> tuple[str | None, str | None]:
+    """Pull an image/gif URL out of a comment body's rendered HTML.
+
+    old.reddit renders a gif/emote as ``<img src=...>`` and a Reddit-uploaded image as
+    ``<a href=...><image></a>``. ``.get_text()`` loses both, so read the URLs directly.
+    """
+    img = md_tag.find("img")
+    if img and img.get("src"):
+        return html.unescape(img["src"]), "gif"
+    for anchor in md_tag.find_all("a", href=True):
+        if anchor.get_text(strip=True) == "<image>":
+            href = html.unescape(anchor["href"])
+            return href, ("gif" if ".gif" in href.lower() else "image")
+    return None, None
+
+
+def _clean_comment_text(md_tag) -> str:
+    """Visible comment text with the literal ``<image>`` media placeholder removed."""
+    return md_tag.get_text("\n", strip=True).replace("<image>", "").strip()
+
+
 async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list[dict]:
     """Fetch top-level comments sorted by score from old.reddit HTML."""
     permalink = post["url"].removeprefix("https://reddit.com")
@@ -204,10 +225,21 @@ async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list
             if not author or author == "[deleted]":
                 continue
             body_tag = thing.select_one("div.entry div.usertext-body div.md")
-            body = body_tag.get_text("\n", strip=True) if body_tag else ""
-            if body in ("", "[removed]", "[deleted]"):
+            if not body_tag:
                 continue
-            comments.append({"author": author, "body": body, "score": _parse_comment_score(thing)})
+            media_url, media_type = _extract_comment_media(body_tag)
+            body = _clean_comment_text(body_tag)
+            if not media_url and body in ("", "[removed]", "[deleted]"):
+                continue
+            comments.append(
+                {
+                    "author": author,
+                    "body": body,
+                    "score": _parse_comment_score(thing),
+                    "media_url": media_url,
+                    "media_type": media_type,
+                }
+            )
 
         comments.sort(key=lambda x: x["score"], reverse=True)
         comments = comments[:limit]
