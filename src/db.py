@@ -107,10 +107,10 @@ async def insert_post(post: dict) -> None:
         )
 
 
-async def get_unpublished_posts(limit: int | None = None) -> list[dict]:
+async def get_unpublished_posts(limit: int | None = None, max_age_hours: int = 24) -> list[dict]:
     query = (
         "SELECT * FROM posts WHERE published_to_tg = FALSE"
-        " AND created_utc > NOW() - INTERVAL '24 hours' ORDER BY score DESC"
+        f" AND created_utc > NOW() - INTERVAL '{int(max_age_hours)} hours' ORDER BY score DESC"
     )
     if limit:
         query += f" LIMIT {limit}"
@@ -139,6 +139,20 @@ async def mark_as_published(reddit_id: str, tg_message_id: int) -> None:
             tg_message_id,
             reddit_id,
         )
+
+
+async def delete_stale_posts(max_age_hours: int = 48) -> int:
+    """Delete unpublished posts older than max_age_hours to keep the DB from growing.
+
+    Published posts are kept (their reddit_id is needed for deduplication).
+    Returns the number of rows deleted.
+    """
+    async with _pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM posts WHERE published_to_tg = FALSE"
+            f" AND created_utc <= NOW() - INTERVAL '{int(max_age_hours)} hours'"
+        )
+    return int(result.split()[-1]) if result else 0
 
 
 async def log_scrape(

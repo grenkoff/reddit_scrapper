@@ -11,6 +11,7 @@ import httpx
 from src.config import load_config
 from src.db import (
     close_db,
+    delete_stale_posts,
     get_unpublished_posts,
     init_db,
     insert_post,
@@ -38,6 +39,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 _VIDEO_DOMAINS = {"youtube.com", "youtu.be", "vimeo.com", "twitter.com", "x.com", "tiktok.com", "streamable.com"}
+
+# When no fresh (<24h) post is available, fall back to the unpublished backlog within this
+# window. Posts older than this are deleted on each scrape so the DB does not grow unbounded.
+_STALE_POST_AGE_HOURS = 48
 
 
 def _is_video_url(url: str) -> bool:
@@ -118,6 +123,9 @@ async def publish_one(config, poller: "UpdatePoller") -> bool | None:
     Returns True if published, False if skipped (publish failed), None if queue is empty.
     """
     posts = await get_unpublished_posts(limit=1)
+    if not posts:
+        # No fresh (<24h) post — fall back to the highest-scoring backlog post within the window.
+        posts = await get_unpublished_posts(limit=1, max_age_hours=_STALE_POST_AGE_HOURS)
     if not posts:
         return None
 
@@ -235,6 +243,9 @@ async def main() -> None:
         # Scrape if due
         if now - last_scrape >= config.scrape_interval:
             await scrape_new_posts(config)
+            deleted = await delete_stale_posts(_STALE_POST_AGE_HOURS)
+            if deleted:
+                logger.info("Deleted %d stale unpublished posts (>%dh)", deleted, _STALE_POST_AGE_HOURS)
             last_scrape = time.monotonic()
 
         # Publish one post (with timeout to prevent hanging on media download)

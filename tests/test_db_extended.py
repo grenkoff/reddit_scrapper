@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import src.db as db_module
 from src.db import (
+    delete_stale_posts,
     get_explanation,
     get_post,
     get_unpublished_posts,
@@ -58,6 +59,35 @@ async def test_get_unpublished_posts_24h_filter():
         await get_unpublished_posts()
     sql = conn.fetch.call_args.args[0]
     assert "24 hours" in sql
+
+
+async def test_get_unpublished_posts_custom_age_window():
+    pool, conn = _make_pool(fetch_return=[])
+    with patch.object(db_module, "_pool", pool):
+        await get_unpublished_posts(max_age_hours=48)
+    sql = conn.fetch.call_args.args[0]
+    assert "48 hours" in sql
+
+
+# --- delete_stale_posts ---
+
+
+async def test_delete_stale_posts_deletes_unpublished_older_than_window():
+    pool, conn = _make_pool(execute_return="DELETE 940")
+    with patch.object(db_module, "_pool", pool):
+        deleted = await delete_stale_posts(48)
+    sql = conn.execute.call_args.args[0]
+    assert "DELETE FROM posts" in sql
+    assert "published_to_tg = FALSE" in sql
+    assert "48 hours" in sql
+    assert deleted == 940
+
+
+async def test_delete_stale_posts_handles_zero():
+    pool, conn = _make_pool(execute_return="DELETE 0")
+    with patch.object(db_module, "_pool", pool):
+        deleted = await delete_stale_posts()
+    assert deleted == 0
 
 
 async def test_get_unpublished_posts_deserializes_media_urls():
