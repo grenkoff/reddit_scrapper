@@ -7,6 +7,8 @@ from httpx import Response
 from src.config import Config
 from src.scraper.reddit import (
     _fetch_gallery_images,
+    _fetch_selftext,
+    _select_selftext,
     fetch_fresh_hls_url,
     fetch_top_comments,
     fetch_top_posts,
@@ -148,6 +150,82 @@ async def test_fetch_gallery_images_none_on_error():
     respx.get(COMMENTS_URL).mock(return_value=Response(500))
     async with httpx.AsyncClient() as client:
         assert await _fetch_gallery_images(client, SAMPLE_POST) is None
+
+
+# --- _select_selftext / _fetch_selftext ---
+
+POST_PAGE_HTML = (
+    '<div class="content">'
+    '<div class="sitetable"><div class="thing id-t3_txt self" data-fullname="t3_txt">'
+    '<div class="entry"><div class="expando"><div class="usertext-body"><div class="md">'
+    "<p>Recovered body line one.</p><p>Line two.</p>"
+    "</div></div></div></div></div></div>"
+    '<div class="commentarea"><div class="sitetable"><div class="comment" data-fullname="t1_c1">'
+    '<div class="usertext-body"><div class="md"><p>a comment body must be ignored</p></div></div>'
+    "</div></div></div>"
+    "</div>"
+)
+
+
+def test_select_selftext_scoped_to_post_thing():
+    body = _select_selftext(POST_PAGE_HTML, "t3_txt")
+    assert body == "Recovered body line one.\nLine two."
+
+
+def test_select_selftext_ignores_comment_bodies():
+    body = _select_selftext(POST_PAGE_HTML, "t3_txt")
+    assert "comment body" not in (body or "")
+
+
+def test_select_selftext_none_when_thing_absent():
+    assert _select_selftext(POST_PAGE_HTML, "t3_missing") is None
+
+
+@respx.mock
+async def test_fetch_selftext_returns_body():
+    post = {"reddit_id": "t3_txt", "url": "https://reddit.com/r/x/comments/txt/t/"}
+    respx.get("https://old.reddit.com/r/x/comments/txt/t/").mock(return_value=Response(200, html=POST_PAGE_HTML))
+    async with httpx.AsyncClient() as client:
+        assert await _fetch_selftext(client, post) == "Recovered body line one.\nLine two."
+
+
+@respx.mock
+async def test_fetch_selftext_none_on_error():
+    post = {"reddit_id": "t3_txt", "url": "https://reddit.com/r/x/comments/txt/t/"}
+    respx.get("https://old.reddit.com/r/x/comments/txt/t/").mock(return_value=Response(500))
+    async with httpx.AsyncClient() as client:
+        assert await _fetch_selftext(client, post) is None
+
+
+@respx.mock
+async def test_fetch_top_posts_recovers_missing_selftext_from_post_page():
+    # A self post whose listing HTML carries no body — the scraper must refetch the post page.
+    listing = (
+        '<div class="thing id-t3_txt self" data-fullname="t3_txt" data-author="carol"'
+        ' data-subreddit="AskReddit" data-url="https://www.reddit.com/r/AskReddit/comments/txt/q/"'
+        ' data-domain="self.AskReddit" data-permalink="/r/AskReddit/comments/txt/q/"'
+        ' data-score="10" data-comments-count="1" data-timestamp="1700000000000">'
+        '<p class="title"><a class="title" href="#">Just a title</a></p>'
+        "</div>"
+    )
+    respx.get("https://old.reddit.com/top/").mock(return_value=Response(200, html=listing))
+    respx.get("https://old.reddit.com/r/AskReddit/comments/txt/q/").mock(
+        return_value=Response(200, html=POST_PAGE_HTML)
+    )
+    posts = await fetch_top_posts(CONFIG)
+    txt = next(p for p in posts if p["reddit_id"] == "t3_txt")
+    assert txt["selftext"] == "Recovered body line one.\nLine two."
+
+
+@respx.mock
+async def test_fetch_top_posts_keeps_listing_selftext_without_refetch():
+    # When the listing already has the body, no post-page request should be needed.
+    route = respx.get("https://old.reddit.com/r/AskReddit/comments/text1/q/").mock(return_value=Response(500))
+    respx.get("https://old.reddit.com/top/").mock(return_value=Response(200, html=LISTING_HTML))
+    posts = await fetch_top_posts(CONFIG)
+    txt = next(p for p in posts if p["reddit_id"] == "t3_text1")
+    assert txt["selftext"] == "This is the body of the text post."
+    assert not route.called
 
 
 # --- fetch_fresh_hls_url ---

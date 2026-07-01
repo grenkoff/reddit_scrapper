@@ -40,6 +40,45 @@ def _api_url(token: str, method: str) -> str:
     return TELEGRAM_API.format(token=token, method=method)
 
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _html_to_plain(text: str) -> str:
+    """Strip HTML tags and unescape entities so a message can be re-sent without parse_mode."""
+    return _html.unescape(_HTML_TAG_RE.sub("", text))
+
+
+def _is_parse_error(response: httpx.Response) -> bool:
+    return response.status_code == 400 and "can't parse entities" in response.text.lower()
+
+
+async def _post_message(
+    client: httpx.AsyncClient,
+    config: Config,
+    method: str,
+    data: dict,
+    *,
+    files: dict | None = None,
+    text_field: str = "caption",
+) -> tuple[int | None, httpx.Response]:
+    """POST to Telegram, retrying once as plain text if HTML parsing fails.
+
+    A single malformed tag used to make Telegram reject the whole message; the caller then
+    dropped the post permanently. Retrying without parse_mode preserves the post as plain text.
+    Returns (message_id | None, last_response) so callers can inspect other failures.
+    """
+    url = _api_url(config.telegram_bot_token, method)
+    response = await client.post(url, data=data, files=files)
+    if _is_parse_error(response) and text_field in data:
+        logger.info("%s hit an HTML parse error, retrying as plain text", method)
+        plain = {k: v for k, v in data.items() if k != "parse_mode"}
+        plain[text_field] = _html_to_plain(data[text_field])
+        response = await client.post(url, data=plain, files=files)
+    if response.status_code == 200:
+        return response.json()["result"]["message_id"], response
+    return None, response
+
+
 def _md_to_telegram_html(text: str) -> str:
     """Convert Reddit markdown subset to Telegram HTML."""
     # Remove Reddit markdown backslash escapes (e.g. \- \( \) \. \# etc.)
@@ -110,6 +149,37 @@ def _build_footer(post: dict, config: Config) -> str:
     return "\n\n".join(parts)
 
 
+def _take_raw_chunk(raw: str, budget: int) -> tuple[str, str]:
+    """Take a leading word-boundary slice of RAW markdown whose converted-HTML length
+    fits ``budget``. Returns ``(converted_html, remaining_raw)``.
+
+    Splitting the raw text (rather than the already-converted HTML) keeps every chunk
+    independently valid HTML — a markdown token straddling the boundary degrades to plain
+    text instead of leaving a dangling ``<a>``/``<b>`` tag that Telegram would reject.
+    """
+    whole = _md_to_telegram_html(raw)
+    if len(whole) <= budget:
+        return whole, ""
+
+    # Binary-search the largest word-boundary raw prefix whose conversion fits the budget.
+    lo, hi, best = 0, len(raw), 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        cut = raw.rfind(" ", 0, mid)
+        if cut <= 0:
+            cut = mid
+        if cut and len(_md_to_telegram_html(raw[:cut])) <= budget:
+            best = cut
+            lo = mid + 1
+        else:
+            hi = mid - 1
+
+    if best <= 0:
+        # A single unbroken token (e.g. a long URL) exceeds the budget — hard-cut it.
+        best = min(budget, len(raw))
+    return _md_to_telegram_html(raw[:best]), raw[best:].lstrip()
+
+
 def _build_media_texts(post: dict, config: Config) -> tuple[str, list[str]]:
     """Build (caption, overflow_messages) for media posts.
 
@@ -133,31 +203,14 @@ def _build_media_texts(post: dict, config: Config) -> tuple[str, list[str]]:
         return full, []
 
     # Caption budget is smaller (MAX_CAPTION_LEN) than overflow messages (MAX_MESSAGE_LEN).
-    caption_budget = MAX_CAPTION_LEN - len(title_block)
+    # Reserve room for the trailing "..." continuation marker.
+    caption_budget = MAX_CAPTION_LEN - len(title_block) - len("...")
     if caption_budget <= 0:
-        return title_html[:MAX_CAPTION_LEN], _chunk_text_evenly(selftext_html, footer)
+        # Title alone fills the caption — escape+wrap the raw title so <b> stays balanced.
+        safe_title = _html.escape(post["title"])[: MAX_CAPTION_LEN - len("<b></b>")]
+        return f"<b>{safe_title}</b>", _chunk_text_evenly(selftext, footer)
 
-    # Figure out minimum number of messages (1 caption + N overflow) and split evenly.
-    total_text = len(selftext_html) + len(footer_block)
-    n_overflow = math.ceil((total_text - caption_budget) / MAX_MESSAGE_LEN) if total_text > caption_budget else 0
-    n_total = 1 + n_overflow
-
-    # Target size per message — selftext portion only (title/footer handled separately)
-    target = math.ceil(len(selftext_html) / n_total)
-    # Caption portion must not exceed budget
-    caption_target = min(target, caption_budget)
-
-    # Split selftext at word boundary near caption_target
-    if len(selftext_html) <= caption_target:
-        caption_text = selftext_html
-        remaining = ""
-    else:
-        split = selftext_html.rfind(" ", 0, caption_target)
-        if split == -1:
-            split = caption_target
-        caption_text = selftext_html[:split]
-        remaining = selftext_html[split:].lstrip()
-
+    caption_text, remaining = _take_raw_chunk(selftext, caption_budget)
     caption = f"{title_block}{caption_text}"
 
     if not remaining:
@@ -172,29 +225,31 @@ def _build_media_texts(post: dict, config: Config) -> tuple[str, list[str]]:
 
 
 def _chunk_text_evenly(body: str, footer: str) -> list[str]:
-    """Split body into evenly-sized chunks with footer appended to the last."""
+    """Split RAW body into evenly-sized chunks with footer appended to the last.
+
+    Each chunk is converted to HTML independently so tags are never split across messages.
+    """
     footer_block = f"\n\n{footer}"
-    total = body + footer_block
-    if len(total) <= MAX_MESSAGE_LEN:
-        return [f"\U0000261d\n...{total}"]
+    marker = "\U0000261d\n..."
+    whole_html = _md_to_telegram_html(body)
+    if len(f"{marker}{whole_html}{footer_block}") <= MAX_MESSAGE_LEN:
+        return [f"{marker}{whole_html}{footer_block}"]
 
-    # How many chunks do we need?
-    n = math.ceil((len(body) + len(footer_block)) / MAX_MESSAGE_LEN)
+    # Aim for even-sized messages: estimate the chunk count from the converted length,
+    # then greedily fill each chunk up to that target by splitting the raw text.
+    overhead = len(marker) + len("...")
+    n = math.ceil((len(whole_html) + len(footer_block)) / (MAX_MESSAGE_LEN - overhead))
+    target = math.ceil(len(whole_html) / max(n, 1))
 
-    chunks = []
+    chunks: list[str] = []
     remaining = body
-    for i in range(n):
-        chunks_left = n - i
-        is_last = chunks_left == 1
-        if is_last:
-            chunks.append(f"\U0000261d\n...{remaining}{footer_block}")
+    while remaining:
+        rem_html = _md_to_telegram_html(remaining)
+        if len(f"{marker}{rem_html}{footer_block}") <= MAX_MESSAGE_LEN:
+            chunks.append(f"{marker}{rem_html}{footer_block}")
             break
-        target = math.ceil(len(remaining) / chunks_left)
-        split = remaining.rfind(" ", 0, target)
-        if split == -1:
-            split = target
-        chunks.append(f"\U0000261d\n...{remaining[:split]}...")
-        remaining = remaining[split:].lstrip()
+        chunk_html, remaining = _take_raw_chunk(remaining, target)
+        chunks.append(f"{marker}{chunk_html}...")
 
     return chunks
 
@@ -211,22 +266,14 @@ async def _send_photo(
     }
     if reply_markup:
         data["reply_markup"] = reply_markup
-    response = await client.post(
-        _api_url(config.telegram_bot_token, "sendPhoto"),
-        data=data,
-        files={"photo": photo_bytes},
-    )
-    if response.status_code == 200:
-        return response.json()["result"]["message_id"]
+    msg_id, response = await _post_message(client, config, "sendPhoto", data, files={"photo": photo_bytes})
+    if msg_id is not None:
+        return msg_id
     if "PHOTO_INVALID_DIMENSIONS" in response.text:
         resized = _fit_photo_for_telegram(photo_bytes)
-        response = await client.post(
-            _api_url(config.telegram_bot_token, "sendPhoto"),
-            data=data,
-            files={"photo": resized},
-        )
-        if response.status_code == 200:
-            return response.json()["result"]["message_id"]
+        msg_id, response = await _post_message(client, config, "sendPhoto", data, files={"photo": resized})
+        if msg_id is not None:
+            return msg_id
     logger.warning("sendPhoto failed: %s", response.text)
     return None
 
@@ -243,12 +290,9 @@ async def _send_photo_url(
     }
     if reply_markup:
         data["reply_markup"] = reply_markup
-    response = await client.post(
-        _api_url(config.telegram_bot_token, "sendPhoto"),
-        data=data,
-    )
-    if response.status_code == 200:
-        return response.json()["result"]["message_id"]
+    msg_id, response = await _post_message(client, config, "sendPhoto", data)
+    if msg_id is not None:
+        return msg_id
     logger.warning("sendPhoto (url) failed: %s", response.text)
     return None
 
@@ -265,13 +309,15 @@ async def _send_video(
     }
     if reply_markup:
         data["reply_markup"] = reply_markup
-    response = await client.post(
-        _api_url(config.telegram_bot_token, "sendVideo"),
-        data=data,
+    msg_id, response = await _post_message(
+        client,
+        config,
+        "sendVideo",
+        data,
         files={"video": video_path.read_bytes()},  # noqa: ASYNC240
     )
-    if response.status_code == 200:
-        return response.json()["result"]["message_id"]
+    if msg_id is not None:
+        return msg_id
     logger.warning("sendVideo failed: %s", response.text)
     return None
 
@@ -287,13 +333,15 @@ async def _send_animation(
     }
     if reply_markup:
         data["reply_markup"] = reply_markup
-    response = await client.post(
-        _api_url(config.telegram_bot_token, "sendAnimation"),
-        data=data,
+    msg_id, response = await _post_message(
+        client,
+        config,
+        "sendAnimation",
+        data,
         files={"animation": (anim_path.name, anim_path.read_bytes(), "video/mp4")},  # noqa: ASYNC240
     )
-    if response.status_code == 200:
-        return response.json()["result"]["message_id"]
+    if msg_id is not None:
+        return msg_id
     logger.warning("sendAnimation failed: %s", response.text)
     return None
 
@@ -316,12 +364,9 @@ async def _send_message(
         data["reply_markup"] = reply_markup
     if reply_to:
         data["reply_to_message_id"] = reply_to
-    response = await client.post(
-        _api_url(config.telegram_bot_token, "sendMessage"),
-        data=data,
-    )
-    if response.status_code == 200:
-        return response.json()["result"]["message_id"]
+    msg_id, response = await _post_message(client, config, "sendMessage", data, text_field="text")
+    if msg_id is not None:
+        return msg_id
     logger.warning("sendMessage failed: %s", response.text)
     return None
 
@@ -353,6 +398,12 @@ async def _send_media_group(
             retry_after = response.json().get("parameters", {}).get("retry_after", 5)
             logger.info("sendMediaGroup rate-limited, sleeping %ds (attempt %d)", retry_after, attempt + 1)
             await asyncio.sleep(retry_after + 1)
+            continue
+        if _is_parse_error(response) and caption:
+            # parse_mode lives inside the media JSON — strip it and retry the caption as plain text.
+            logger.info("sendMediaGroup hit an HTML parse error, retrying as plain text")
+            media[0]["caption"] = _html_to_plain(caption)
+            media[0].pop("parse_mode", None)
             continue
         break
     logger.warning("sendMediaGroup failed: %s", response.text)
@@ -610,17 +661,18 @@ async def publish_comment(
         # Fallback to text if no media or media send failed
         if not msg_id:
             text = _format_comment(comment) if media_url else caption
-            response = await client.post(
-                _api_url(config.telegram_bot_token, "sendMessage"),
-                data={
+            msg_id, _ = await _post_message(
+                client,
+                config,
+                "sendMessage",
+                {
                     "chat_id": discussion_chat_id,
                     "text": text[:MAX_MESSAGE_LEN],
                     "parse_mode": "HTML",
                     "reply_to_message_id": reply_to_message_id,
                     "disable_web_page_preview": "true",
                 },
+                text_field="text",
             )
-            if response.status_code == 200:
-                msg_id = response.json()["result"]["message_id"]
 
     return msg_id

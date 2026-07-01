@@ -1,13 +1,32 @@
+import re
+
+import httpx
 import respx
 from httpx import Response
 
 from src.config import Config
 from src.publisher.telegram import (
+    MAX_CAPTION_LEN,
+    MAX_MESSAGE_LEN,
     _build_footer,
+    _build_media_texts,
     _chunk_text_evenly,
+    _html_to_plain,
     _md_to_telegram_html,
     _publish_text_messages,
+    _send_message,
+    _take_raw_chunk,
+    publish_post,
 )
+
+
+def _tags_balanced(s: str) -> bool:
+    """No HTML tag is split across the message boundary."""
+    opens = len(re.findall(r"<(?:b|i|s|code|a)(?:\s|>)", s))
+    closes = len(re.findall(r"</(?:b|i|s|code|a)>", s))
+    dangling = re.search(r"<[^>]*$", s) is not None
+    return opens == closes and not dangling
+
 
 CONFIG = Config(
     telegram_bot_token="testtoken",
@@ -153,6 +172,118 @@ def test_chunk_evenly_middle_chunks_have_prefix():
         assert "\U0001f4ac" in chunk or "..." in chunk
 
 
+# --- _take_raw_chunk (raw splitting keeps HTML valid) ---
+
+
+def test_take_raw_chunk_whole_fits():
+    html, rest = _take_raw_chunk("hello world", 1000)
+    assert html == "hello world"
+    assert rest == ""
+
+
+def test_take_raw_chunk_respects_budget():
+    html, rest = _take_raw_chunk("word " * 500, 100)
+    assert len(html) <= 100
+    assert rest  # there is leftover
+
+
+def test_take_raw_chunk_never_splits_a_link_tag():
+    # A markdown link straddling the budget must not leave a dangling <a ...> in the chunk.
+    raw = "x" * 90 + " [click here](https://example.com/some/long/path) " + "tail " * 50
+    html, rest = _take_raw_chunk(raw, 100)
+    assert _tags_balanced(html)
+    assert "<a" not in html or "</a>" in html
+
+
+def test_take_raw_chunk_hard_cuts_oversized_token():
+    # A single token longer than the budget still makes progress (no infinite loop).
+    html, rest = _take_raw_chunk("a" * 500, 100)
+    assert html
+    assert len(rest) < 500
+
+
+# --- _build_media_texts: HTML stays valid across the split ---
+
+
+def test_media_caption_and_overflow_keep_tags_balanced():
+    body = "x" * 930 + " [label](https://example.com/" + "a" * 200 + ") " + "tail " * 400
+    post = {**BASE_POST, "post_type": "image", "content_url": "https://i.redd.it/a.jpg", "selftext": body}
+    caption, overflow = _build_media_texts(post, CONFIG)
+    assert len(caption) <= MAX_CAPTION_LEN
+    assert _tags_balanced(caption)
+    for msg in overflow:
+        assert len(msg) <= MAX_MESSAGE_LEN
+        assert _tags_balanced(msg)
+
+
+def test_media_caption_link_pushed_whole_into_overflow_not_broken():
+    body = "x" * 990 + " [label](https://example.com/link) " + "tail " * 400
+    post = {**BASE_POST, "post_type": "image", "content_url": "https://i.redd.it/a.jpg", "selftext": body}
+    caption, overflow = _build_media_texts(post, CONFIG)
+    joined = caption + " ".join(overflow)
+    # The link survives intact somewhere rather than being cut in half.
+    assert '<a href="https://example.com/link">label</a>' in joined
+
+
+def test_chunk_text_evenly_keeps_tags_balanced_when_link_straddles():
+    body = "y" * 3000 + " [label](https://example.com/x) " + "z" * 3000
+    chunks = _chunk_text_evenly(body, "footer")
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert len(chunk) <= MAX_MESSAGE_LEN
+        assert _tags_balanced(chunk)
+
+
+# --- _html_to_plain / plain-text fallback (Fix B) ---
+
+
+def test_html_to_plain_strips_tags_and_unescapes():
+    assert _html_to_plain('<b>Hi</b> <a href="u">x</a> a &amp; b &lt;c&gt;') == "Hi x a & b <c>"
+
+
+@respx.mock
+async def test_send_message_retries_as_plain_text_on_parse_error():
+    responses = [
+        Response(400, json={"description": "Bad Request: can't parse entities: unclosed tag"}),
+        Response(200, json={"result": {"message_id": 77}}),
+    ]
+    sent = []
+
+    def handler(request):
+        sent.append(request.content.decode())
+        return responses[len(sent) - 1]
+
+    respx.post("https://api.telegram.org/bottesttoken/sendMessage").mock(side_effect=handler)
+    async with httpx.AsyncClient() as client:
+        msg_id = await _send_message(client, CONFIG, "<b>broken")
+    assert msg_id == 77
+    assert len(sent) == 2
+    # Retry dropped parse_mode and stripped the tag.
+    assert "parse_mode" not in sent[1]
+
+
+@respx.mock
+async def test_media_post_not_dropped_on_caption_parse_error():
+    # sendPhoto rejects the HTML caption once, then the plain-text retry succeeds — the post
+    # must reach Telegram instead of being silently dropped.
+    responses = [
+        Response(400, json={"description": "Bad Request: can't parse entities: unclosed tag"}),
+        Response(200, json={"result": {"message_id": 55}}),
+    ]
+    calls = {"n": 0}
+
+    def handler(request):
+        r = responses[calls["n"]]
+        calls["n"] += 1
+        return r
+
+    respx.post("https://api.telegram.org/bottesttoken/sendPhoto").mock(side_effect=handler)
+    post = {**BASE_POST, "post_type": "link", "content_url": None, "preview_url": "https://img/x.jpg"}
+    msg_id = await publish_post(CONFIG, post)
+    assert msg_id == 55
+    assert calls["n"] == 2
+
+
 # --- _publish_text_messages ---
 
 
@@ -162,7 +293,6 @@ async def test_publish_text_single_message():
         return_value=Response(200, json={"result": {"message_id": 1}})
     )
     post = {**BASE_POST, "selftext": "Short text."}
-    import httpx
 
     async with httpx.AsyncClient() as client:
         msg_id = await _publish_text_messages(client, CONFIG, post)
@@ -180,7 +310,6 @@ async def test_publish_text_split_adds_continuation_marker():
     respx.post("https://api.telegram.org/bottesttoken/sendMessage").mock(side_effect=capture)
     # 900 words × 5 chars = 4500 chars → exceeds MAX_MESSAGE_LEN (4096) → forces split
     post = {**BASE_POST, "selftext": "word " * 900}
-    import httpx
 
     async with httpx.AsyncClient() as client:
         await _publish_text_messages(client, CONFIG, post)
@@ -198,7 +327,6 @@ async def test_publish_text_first_message_ends_with_ellipsis_when_split():
 
     respx.post("https://api.telegram.org/bottesttoken/sendMessage").mock(side_effect=capture)
     post = {**BASE_POST, "selftext": "word " * 900}
-    import httpx
 
     async with httpx.AsyncClient() as client:
         await _publish_text_messages(client, CONFIG, post)

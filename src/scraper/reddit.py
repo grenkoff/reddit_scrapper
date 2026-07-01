@@ -166,6 +166,37 @@ async def _fetch_gallery_images(client: httpx.AsyncClient, post: dict) -> list[s
     return _select_gallery_urls(response.text)
 
 
+def _select_selftext(page_html: str, reddit_id: str) -> str | None:
+    """Extract a self-post's body from its own page, scoped to the post's ``thing``.
+
+    Scoping by ``data-fullname`` avoids pulling in comment bodies, which share the
+    ``div.usertext-body div.md`` markup.
+    """
+    soup = BeautifulSoup(page_html, "html.parser")
+    thing = soup.select_one(f"div.thing[data-fullname='{reddit_id}']")
+    if not thing:
+        return None
+    md = thing.select_one("div.expando div.usertext-body div.md") or thing.select_one("div.usertext-body div.md")
+    if not md:
+        return None
+    return md.get_text("\n", strip=True) or None
+
+
+async def _fetch_selftext(client: httpx.AsyncClient, post: dict) -> str | None:
+    """Fetch a text post's page to recover a body the listing HTML omitted.
+
+    old.reddit's listing does not always inline the full self-text (long posts load it on
+    expand), so a title-only text post is refetched from its own page.
+    """
+    permalink = post["url"].removeprefix("https://reddit.com")
+    try:
+        response = await _get_with_retry(client, f"{OLD_REDDIT}{permalink}", {}, label=f"selftext {post['reddit_id']}")
+    except Exception:
+        logger.warning("Failed to fetch selftext for %s", post["reddit_id"])
+        return None
+    return _select_selftext(response.text, post["reddit_id"])
+
+
 async def fetch_top_posts(config: Config) -> list[dict]:
     url = f"{OLD_REDDIT}/top/"
     params = {"t": "day", "limit": config.posts_limit}
@@ -180,6 +211,10 @@ async def fetch_top_posts(config: Config) -> list[dict]:
                 # Space out per-post page fetches so old.reddit doesn't rate-limit the burst.
                 await asyncio.sleep(2)
                 post["media_urls"] = await _fetch_gallery_images(client, post)
+            elif post["post_type"] == "text" and not post["selftext"]:
+                # Listing omitted the body — refetch the post page so it doesn't publish title-only.
+                await asyncio.sleep(2)
+                post["selftext"] = await _fetch_selftext(client, post)
 
     logger.info("Fetched %d posts from Reddit", len(posts))
     return posts
