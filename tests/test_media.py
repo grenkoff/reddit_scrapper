@@ -2,7 +2,10 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.scraper.media import _get_duration, _get_ffmpeg, cleanup
+import respx
+from httpx import Response
+
+from src.scraper.media import _get_duration, _get_ffmpeg, cleanup, download_image
 
 # --- _get_ffmpeg ---
 
@@ -101,6 +104,28 @@ async def test_download_video_direct_skips_hls_when_no_ffmpeg():
     # With no ffmpeg, falls back to direct download
     if result:
         cleanup(result)
+
+
+# --- download_image ---
+
+
+@respx.mock
+async def test_download_image_sends_browser_user_agent():
+    route = respx.get("https://external-preview.redd.it/big.jpg").mock(
+        return_value=Response(200, content=b"\xff\xd8\xff imagebytes")
+    )
+    path = await download_image("https://external-preview.redd.it/big.jpg?width=1080&s=SIG")
+    assert path is not None
+    ua = route.calls.last.request.headers.get("user-agent", "")
+    assert "Mozilla" in ua and "Chrome" in ua
+    cleanup(path)
+
+
+@respx.mock
+async def test_download_image_returns_none_on_403():
+    respx.get("https://external-preview.redd.it/blocked.jpg").mock(return_value=Response(403))
+    path = await download_image("https://external-preview.redd.it/blocked.jpg")
+    assert path is None
 
 
 async def test_download_video_direct_returns_none_on_failure():

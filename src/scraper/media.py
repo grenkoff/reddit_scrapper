@@ -11,15 +11,18 @@ import yt_dlp
 logger = logging.getLogger(__name__)
 
 TMP_DIR = Path("tmp")
+# Reddit's preview hosts (external-preview.redd.it) 403 non-browser clients, so present as one.
+BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 
 async def download_image(url: str) -> Path | None:
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(url)
+            response = await client.get(url, headers={"User-Agent": BROWSER_UA})
             response.raise_for_status()
 
         suffix = Path(url.split("?")[0]).suffix or ".jpg"
+        TMP_DIR.mkdir(exist_ok=True)  # noqa: ASYNC240
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, dir=TMP_DIR) as tmp_file:
             tmp_file.write(response.content)
             return Path(tmp_file.name)

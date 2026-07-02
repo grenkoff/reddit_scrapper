@@ -498,10 +498,18 @@ async def _publish_link(
     caption: str,
     media_path: Path | None = None,
     *,
+    photo_path: Path | None = None,
     reply_markup: str | None = None,
 ) -> int | None:
     if media_path:
         return await _send_video(client, config, caption, media_path, reply_markup=reply_markup)
+
+    # Prefer sending the preview we downloaded ourselves as bytes: Telegram can't fetch
+    # external-preview.redd.it by URL (hotlink-protected → 403), so a URL send returns None.
+    if photo_path:
+        msg_id = await _send_photo(client, config, caption, photo_path, reply_markup=reply_markup)
+        if msg_id:
+            return msg_id
 
     preview_url = post.get("preview_url")
     if preview_url:
@@ -536,6 +544,7 @@ async def publish_post(
     post: dict,
     media_path: Path | None = None,
     media_paths: list[Path] | None = None,
+    photo_path: Path | None = None,
 ) -> int | None:
     caption, overflow = _build_media_texts(post, config)
     post_type = post["post_type"]
@@ -552,7 +561,7 @@ async def publish_post(
         elif post_type == "text":
             msg_id = await _publish_text_messages(client, config, post)
         elif post_type == "link":
-            msg_id = await _publish_link(client, config, post, caption, media_path)
+            msg_id = await _publish_link(client, config, post, caption, media_path, photo_path=photo_path)
         else:
             msg_id = await _send_message(client, config, caption)
 
