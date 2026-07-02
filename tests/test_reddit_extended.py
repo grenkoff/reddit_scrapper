@@ -7,7 +7,9 @@ from httpx import Response
 from src.config import Config
 from src.scraper.reddit import (
     _fetch_gallery_images,
+    _fetch_preview_image,
     _fetch_selftext,
+    _select_preview_image,
     _select_selftext,
     fetch_fresh_hls_url,
     fetch_top_comments,
@@ -226,6 +228,87 @@ async def test_fetch_top_posts_keeps_listing_selftext_without_refetch():
     txt = next(p for p in posts if p["reddit_id"] == "t3_text1")
     assert txt["selftext"] == "This is the body of the text post."
     assert not route.called
+
+
+# --- _select_preview_image / _fetch_preview_image ---
+
+PREVIEW_PAGE_HTML = (
+    "<html><head>"
+    '<meta property="og:image" content="https://external-preview.redd.it/big.jpg?width=1080&amp;s=SIG"/>'
+    "</head><body></body></html>"
+)
+
+
+def test_select_preview_image_reads_og_image():
+    assert _select_preview_image(PREVIEW_PAGE_HTML) == "https://external-preview.redd.it/big.jpg?width=1080&s=SIG"
+
+
+def test_select_preview_image_rejects_default_reddit_icon():
+    html_icon = '<meta property="og:image" content="https://www.redditstatic.com/icon.png"/>'
+    assert _select_preview_image(html_icon) is None
+
+
+def test_select_preview_image_none_when_absent():
+    assert _select_preview_image("<html><head></head></html>") is None
+
+
+@respx.mock
+async def test_fetch_preview_image_returns_url():
+    post = {"reddit_id": "t3_lnk", "url": "https://reddit.com/r/x/comments/lnk/l/"}
+    respx.get("https://old.reddit.com/r/x/comments/lnk/l/").mock(return_value=Response(200, html=PREVIEW_PAGE_HTML))
+    async with httpx.AsyncClient() as client:
+        assert await _fetch_preview_image(client, post) == "https://external-preview.redd.it/big.jpg?width=1080&s=SIG"
+
+
+@respx.mock
+async def test_fetch_preview_image_none_on_error():
+    post = {"reddit_id": "t3_lnk", "url": "https://reddit.com/r/x/comments/lnk/l/"}
+    respx.get("https://old.reddit.com/r/x/comments/lnk/l/").mock(return_value=Response(500))
+    async with httpx.AsyncClient() as client:
+        assert await _fetch_preview_image(client, post) is None
+
+
+@respx.mock
+async def test_fetch_top_posts_upgrades_link_thumbnail_to_og_image():
+    # A link post whose listing carries only a tiny thumbnail — the scraper must refetch the
+    # post page and replace preview_url with the full-size og:image.
+    listing = (
+        '<div class="thing id-t3_lnk link" data-fullname="t3_lnk" data-author="erin"'
+        ' data-subreddit="news" data-url="https://example.com/article" data-domain="example.com"'
+        ' data-permalink="/r/news/comments/lnk/headline/"'
+        ' data-score="321" data-comments-count="89" data-timestamp="1700000000000">'
+        '<a class="thumbnail" href="#"><img src="//b.thumbs.redditmedia.com/tiny.jpg"></a>'
+        '<a class="title" href="#">An external article</a>'
+        "</div>"
+    )
+    respx.get("https://old.reddit.com/top/").mock(return_value=Response(200, html=listing))
+    respx.get("https://old.reddit.com/r/news/comments/lnk/headline/").mock(
+        return_value=Response(200, html=PREVIEW_PAGE_HTML)
+    )
+    posts = await fetch_top_posts(CONFIG)
+    lnk = next(p for p in posts if p["reddit_id"] == "t3_lnk")
+    assert lnk["preview_url"] == "https://external-preview.redd.it/big.jpg?width=1080&s=SIG"
+
+
+@respx.mock
+async def test_fetch_top_posts_keeps_thumbnail_when_og_image_missing():
+    # If the post page has no usable og:image, keep the listing thumbnail as a fallback.
+    listing = (
+        '<div class="thing id-t3_lnk link" data-fullname="t3_lnk" data-author="erin"'
+        ' data-subreddit="news" data-url="https://example.com/article" data-domain="example.com"'
+        ' data-permalink="/r/news/comments/lnk/headline/"'
+        ' data-score="321" data-comments-count="89" data-timestamp="1700000000000">'
+        '<a class="thumbnail" href="#"><img src="//b.thumbs.redditmedia.com/tiny.jpg"></a>'
+        '<a class="title" href="#">An external article</a>'
+        "</div>"
+    )
+    respx.get("https://old.reddit.com/top/").mock(return_value=Response(200, html=listing))
+    respx.get("https://old.reddit.com/r/news/comments/lnk/headline/").mock(
+        return_value=Response(200, html="<html><head></head></html>")
+    )
+    posts = await fetch_top_posts(CONFIG)
+    lnk = next(p for p in posts if p["reddit_id"] == "t3_lnk")
+    assert lnk["preview_url"] == "https://b.thumbs.redditmedia.com/tiny.jpg"
 
 
 # --- fetch_fresh_hls_url ---
