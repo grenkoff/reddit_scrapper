@@ -197,6 +197,35 @@ async def _fetch_selftext(client: httpx.AsyncClient, post: dict) -> str | None:
     return _select_selftext(response.text, post["reddit_id"])
 
 
+def _select_preview_image(page_html: str) -> str | None:
+    """Pick a link post's large preview image from its page's ``og:image`` meta tag.
+
+    The listing only exposes a ~140px ``thumbs.redditmedia.com`` thumbnail, which Telegram
+    renders tiny. The post page's ``og:image`` is the full ``external-preview.redd.it`` render
+    (the same large image Reddit shows), so prefer it. The default Reddit snoo/icon served for
+    previewless posts lives on ``redditstatic.com`` and is rejected.
+    """
+    soup = BeautifulSoup(page_html, "html.parser")
+    meta = soup.select_one('meta[property="og:image"]')
+    if not meta:
+        return None
+    url = html.unescape((meta.get("content") or "").strip())
+    if not url.startswith("http") or "redditstatic.com" in url:
+        return None
+    return url
+
+
+async def _fetch_preview_image(client: httpx.AsyncClient, post: dict) -> str | None:
+    """Fetch a link post's page to recover the large preview the listing thumbnail shrinks."""
+    permalink = post["url"].removeprefix("https://reddit.com")
+    try:
+        response = await _get_with_retry(client, f"{OLD_REDDIT}{permalink}", {}, label=f"preview {post['reddit_id']}")
+    except Exception:
+        logger.warning("Failed to fetch preview image for %s", post["reddit_id"])
+        return None
+    return _select_preview_image(response.text)
+
+
 async def fetch_top_posts(config: Config) -> list[dict]:
     url = f"{OLD_REDDIT}/top/"
     params = {"t": "day", "limit": config.posts_limit}
@@ -215,6 +244,12 @@ async def fetch_top_posts(config: Config) -> list[dict]:
                 # Listing omitted the body — refetch the post page so it doesn't publish title-only.
                 await asyncio.sleep(2)
                 post["selftext"] = await _fetch_selftext(client, post)
+            elif post["post_type"] == "link" and post["preview_url"]:
+                # Listing only has a tiny thumbnail — refetch for the full-size og:image preview.
+                await asyncio.sleep(2)
+                bigger = await _fetch_preview_image(client, post)
+                if bigger:
+                    post["preview_url"] = bigger
 
     logger.info("Fetched %d posts from Reddit", len(posts))
     return posts
