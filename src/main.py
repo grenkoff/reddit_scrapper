@@ -144,6 +144,7 @@ async def publish_one(config, poller: "UpdatePoller") -> bool | None:
     post = posts[0]
     media_path = None
     media_paths = None
+    photo_path = None
 
     if post["post_type"] == "image" and post.get("content_url"):
         media_path = await download_image(post["content_url"])
@@ -174,9 +175,14 @@ async def publish_one(config, poller: "UpdatePoller") -> bool | None:
             media_path = await asyncio.get_event_loop().run_in_executor(None, compress_video, media_path)
         if media_path is None:
             return await _drop_with_notice(config, post, "Link-video download/compress failed for")
+    elif post["post_type"] == "link" and post.get("preview_url"):
+        # Download the preview ourselves and send it as bytes — Telegram can't fetch
+        # external-preview.redd.it by URL. On failure keep photo_path=None (not a drop):
+        # _publish_link degrades to URL send, then plain text.
+        photo_path = await download_image(post["preview_url"])
 
     try:
-        msg_id = await publish_post(config, post, media_path=media_path, media_paths=media_paths)
+        msg_id = await publish_post(config, post, media_path=media_path, media_paths=media_paths, photo_path=photo_path)
     except Exception as e:
         logger.warning("Failed to publish post %s: %s", post["reddit_id"], e)
         msg_id = None
@@ -194,6 +200,8 @@ async def publish_one(config, poller: "UpdatePoller") -> bool | None:
     if media_paths:
         for p in media_paths:
             cleanup(p)
+    if photo_path:
+        cleanup(photo_path)
 
     return bool(msg_id)  # True=published, False=skipped
 

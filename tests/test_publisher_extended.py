@@ -13,6 +13,7 @@ from src.publisher.telegram import (
     _chunk_text_evenly,
     _html_to_plain,
     _md_to_telegram_html,
+    _publish_link,
     _publish_text_messages,
     _send_message,
     _take_raw_chunk,
@@ -282,6 +283,48 @@ async def test_media_post_not_dropped_on_caption_parse_error():
     msg_id = await publish_post(CONFIG, post)
     assert msg_id == 55
     assert calls["n"] == 2
+
+
+# --- _publish_link (downloaded preview) ---
+
+
+@respx.mock
+async def test_publish_link_sends_downloaded_photo_as_bytes(tmp_path):
+    photo = tmp_path / "preview.jpg"
+    photo.write_bytes(b"\xff\xd8\xff imagebytes")
+    photo_route = respx.post("https://api.telegram.org/bottesttoken/sendPhoto").mock(
+        return_value=Response(200, json={"result": {"message_id": 71}})
+    )
+    msg_route = respx.post("https://api.telegram.org/bottesttoken/sendMessage").mock(
+        return_value=Response(200, json={"result": {"message_id": 99}})
+    )
+    post = {**BASE_POST, "post_type": "link", "preview_url": "https://external-preview.redd.it/x.jpg"}
+
+    async with httpx.AsyncClient() as client:
+        msg_id = await _publish_link(client, CONFIG, post, "caption", photo_path=photo)
+
+    assert msg_id == 71
+    # Bytes are sent as multipart/form-data (files=), not a URL form field.
+    assert "multipart/form-data" in photo_route.calls.last.request.headers.get("content-type", "")
+    assert not msg_route.called  # no text fallback when the photo succeeds
+
+
+@respx.mock
+async def test_publish_link_falls_back_to_url_then_text(tmp_path):
+    photo = tmp_path / "preview.jpg"
+    photo.write_bytes(b"\xff\xd8\xff imagebytes")
+    # Both the byte send and the URL send fail → degrade to plain text.
+    respx.post("https://api.telegram.org/bottesttoken/sendPhoto").mock(return_value=Response(400))
+    msg_route = respx.post("https://api.telegram.org/bottesttoken/sendMessage").mock(
+        return_value=Response(200, json={"result": {"message_id": 42}})
+    )
+    post = {**BASE_POST, "post_type": "link", "preview_url": "https://external-preview.redd.it/x.jpg"}
+
+    async with httpx.AsyncClient() as client:
+        msg_id = await _publish_link(client, CONFIG, post, "caption", photo_path=photo)
+
+    assert msg_id == 42
+    assert msg_route.called  # fell all the way back to text
 
 
 # --- _publish_text_messages ---
