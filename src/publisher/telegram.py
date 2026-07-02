@@ -71,9 +71,17 @@ async def _post_message(
     response = await client.post(url, data=data, files=files)
     if _is_parse_error(response) and text_field in data:
         logger.info("%s hit an HTML parse error, retrying as plain text", method)
-        plain = {k: v for k, v in data.items() if k != "parse_mode"}
-        plain[text_field] = _html_to_plain(data[text_field])
-        response = await client.post(url, data=plain, files=files)
+        data = {k: v for k, v in data.items() if k != "parse_mode"}
+        data[text_field] = _html_to_plain(data[text_field])
+        response = await client.post(url, data=data, files=files)
+    # Retry on rate-limiting so a 429 doesn't permanently drop the post (galleries already do this).
+    for _ in range(3):
+        if response.status_code != 429:
+            break
+        retry_after = response.json().get("parameters", {}).get("retry_after", 5)
+        logger.info("%s rate-limited, sleeping %ds", method, retry_after)
+        await asyncio.sleep(retry_after + 1)
+        response = await client.post(url, data=data, files=files)
     if response.status_code == 200:
         return response.json()["result"]["message_id"], response
     return None, response
@@ -502,6 +510,25 @@ async def _publish_link(
             return msg_id
 
     return await _send_message(client, config, caption, reply_markup=reply_markup)
+
+
+async def publish_failed_notice(config: Config, post: dict) -> int | None:
+    """Send a link-only notice when a post could not be published normally.
+
+    Ensures a post never vanishes silently: even if media/caption sending fails, its Reddit
+    link (and external link, for link posts) reaches Telegram for manual review later.
+    """
+    lines = ["⚠️ <b>Не удалось опубликовать пост</b>"]
+    title = (post.get("title") or "").strip()
+    if title:
+        lines.append(_html.escape(title))
+    lines.append(f'<a href="{post["url"]}">{post["url"]}</a>')
+    content_url = post.get("content_url")
+    if content_url and content_url != post["url"]:
+        lines.append(_html.escape(content_url))
+    text = "\n".join(lines)
+    async with httpx.AsyncClient(timeout=None) as client:
+        return await _send_message(client, config, text)
 
 
 async def publish_post(

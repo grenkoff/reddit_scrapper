@@ -20,7 +20,7 @@ from src.db import (
     mark_as_published,
 )
 from src.publisher.poller import UpdatePoller
-from src.publisher.telegram import publish_comment, publish_post
+from src.publisher.telegram import publish_comment, publish_failed_notice, publish_post
 from src.scraper.media import (
     cleanup,
     compress_video,
@@ -117,6 +117,18 @@ async def _publish_comments_delayed(config, poller: "UpdatePoller", post: dict, 
         logger.warning("Failed to publish comments for %s", post["reddit_id"], exc_info=True)
 
 
+async def _drop_with_notice(config, post: dict, reason: str) -> bool:
+    """Mark a post handled but send a link-only notice so it isn't silently lost."""
+    logger.warning("%s %s — sending link-only fallback", reason, post["reddit_id"])
+    try:
+        fallback_id = await publish_failed_notice(config, post)
+    except Exception as e:
+        logger.warning("Link-only fallback failed for %s: %s", post["reddit_id"], e)
+        fallback_id = None
+    await mark_as_published(post["reddit_id"], fallback_id or 0)
+    return False
+
+
 async def publish_one(config, poller: "UpdatePoller") -> bool | None:
     """Pick the next unpublished post and publish it.
 
@@ -136,15 +148,11 @@ async def publish_one(config, poller: "UpdatePoller") -> bool | None:
     if post["post_type"] == "image" and post.get("content_url"):
         media_path = await download_image(post["content_url"])
         if media_path is None:
-            logger.warning("Skipping image post %s: failed to download", post["reddit_id"])
-            await mark_as_published(post["reddit_id"], 0)
-            return False
+            return await _drop_with_notice(config, post, "Image download failed for")
     elif post["post_type"] == "gif" and post.get("content_url"):
         media_path = await download_gif(post["content_url"])
         if media_path is None:
-            logger.warning("Skipping gif post %s: failed to download", post["reddit_id"])
-            await mark_as_published(post["reddit_id"], 0)
-            return False
+            return await _drop_with_notice(config, post, "GIF download failed for")
     elif post["post_type"] == "video" and post.get("video_url"):
         fresh_hls = await fetch_fresh_hls_url(config, post["reddit_id"])
         hls_url = fresh_hls or post.get("hls_url")
@@ -154,24 +162,18 @@ async def publish_one(config, poller: "UpdatePoller") -> bool | None:
         if media_path:
             media_path = await asyncio.get_event_loop().run_in_executor(None, compress_video, media_path)
         if media_path is None:
-            logger.warning("Skipping video post %s: failed to download or compress", post["reddit_id"])
-            await mark_as_published(post["reddit_id"], 0)
-            return False
+            return await _drop_with_notice(config, post, "Video download/compress failed for")
     elif post["post_type"] == "gallery" and post.get("media_urls"):
         paths = [await download_image(url) for url in post["media_urls"]]
         media_paths = [p for p in paths if p is not None] or None
         if media_paths is None:
-            logger.warning("Skipping gallery post %s: failed to download any images", post["reddit_id"])
-            await mark_as_published(post["reddit_id"], 0)
-            return False
+            return await _drop_with_notice(config, post, "Gallery download failed for")
     elif post["post_type"] == "link" and post.get("content_url") and _is_video_url(post["content_url"]):
         media_path = await asyncio.get_event_loop().run_in_executor(None, download_video, post["content_url"])
         if media_path:
             media_path = await asyncio.get_event_loop().run_in_executor(None, compress_video, media_path)
         if media_path is None:
-            logger.warning("Skipping link-video post %s: failed to download or compress", post["reddit_id"])
-            await mark_as_published(post["reddit_id"], 0)
-            return False
+            return await _drop_with_notice(config, post, "Link-video download/compress failed for")
 
     try:
         msg_id = await publish_post(config, post, media_path=media_path, media_paths=media_paths)
@@ -184,8 +186,8 @@ async def publish_one(config, poller: "UpdatePoller") -> bool | None:
         poller.register_post(msg_id, post)
         asyncio.create_task(_publish_comments_delayed(config, poller, post, msg_id))
     else:
-        logger.warning("Skipping post %s: publish failed", post["reddit_id"])
-        await mark_as_published(post["reddit_id"], 0)
+        # Publishing failed — send a link-only notice so the post isn't silently lost.
+        await _drop_with_notice(config, post, "Publish failed for")
 
     if media_path:
         cleanup(media_path)
