@@ -2,17 +2,24 @@ from pathlib import Path
 
 import httpx
 import respx
+from bs4 import BeautifulSoup
 from httpx import Response
 
 from src.config import Config
 from src.scraper.reddit import (
     _select_preview_image,
     _select_selftext,
+    _selftext_from_md,
     enrich_post,
     fetch_fresh_hls_url,
     fetch_top_comments,
     fetch_top_posts,
 )
+
+
+def _md(html: str) -> str | None:
+    return _selftext_from_md(BeautifulSoup(f'<div class="md">{html}</div>', "html.parser").select_one("div.md"))
+
 
 LISTING_HTML = Path("tests/fixtures/old_reddit_top.html").read_text()
 COMMENTS_HTML = Path("tests/fixtures/old_reddit_comments.html").read_text()
@@ -149,7 +156,7 @@ PREVIEW_PAGE_HTML = (
 
 def test_select_selftext_scoped_to_post_thing():
     body = _select_selftext(POST_PAGE_HTML, "t3_txt")
-    assert body == "Recovered body line one.\nLine two."
+    assert body == "Recovered body line one.\n\nLine two."
 
 
 def test_select_selftext_ignores_comment_bodies():
@@ -159,6 +166,34 @@ def test_select_selftext_ignores_comment_bodies():
 
 def test_select_selftext_none_when_thing_absent():
     assert _select_selftext(POST_PAGE_HTML, "t3_missing") is None
+
+
+# --- _selftext_from_md (rendered HTML -> markdown, restoring paragraphs/emphasis) ---
+
+
+def test_md_paragraphs_separated_by_blank_line():
+    assert _md("<p>First paragraph.</p><p>Second paragraph.</p>") == "First paragraph.\n\nSecond paragraph."
+
+
+def test_md_soft_breaks_become_newlines():
+    assert _md("<p>But.<br/>It.<br/>Ain't.</p>") == "But.\nIt.\nAin't."
+
+
+def test_md_emphasis_and_links_become_markdown():
+    body = _md('<p>An <strong>bold</strong> and <em>italic</em> and <a href="https://x.com">link</a>.</p>')
+    assert body == "An **bold** and *italic* and [link](https://x.com)."
+
+
+def test_md_blockquote_prefixes_lines():
+    assert _md("<blockquote><p>quoted line</p></blockquote><p>after</p>") == "> quoted line\n\nafter"
+
+
+def test_md_list_items_become_dashes():
+    assert _md("<ul><li>one</li><li>two</li></ul>") == "- one\n- two"
+
+
+def test_md_plain_text_without_tags():
+    assert _md("just text") == "just text"
 
 
 def test_select_preview_image_reads_og_image():
@@ -184,7 +219,7 @@ async def test_enrich_recovers_body_for_media_post():
     respx.get("https://old.reddit.com/r/x/comments/txt/t/").mock(return_value=Response(200, html=POST_PAGE_HTML))
     async with httpx.AsyncClient() as client:
         await enrich_post(client, post)
-    assert post["selftext"] == "Recovered body line one.\nLine two."
+    assert post["selftext"] == "Recovered body line one.\n\nLine two."
 
 
 @respx.mock
@@ -193,7 +228,7 @@ async def test_enrich_recovers_body_for_text_post():
     respx.get("https://old.reddit.com/r/x/comments/txt/t/").mock(return_value=Response(200, html=POST_PAGE_HTML))
     async with httpx.AsyncClient() as client:
         await enrich_post(client, post)
-    assert post["selftext"] == "Recovered body line one.\nLine two."
+    assert post["selftext"] == "Recovered body line one.\n\nLine two."
 
 
 @respx.mock
