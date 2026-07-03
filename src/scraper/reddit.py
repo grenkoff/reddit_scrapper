@@ -5,7 +5,7 @@ import re
 from datetime import UTC, datetime
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 from src.config import Config
 
@@ -67,6 +67,59 @@ def _abs_url(url: str | None) -> str | None:
     return url
 
 
+_INLINE_MD = {"strong": "**", "b": "**", "em": "*", "i": "*", "del": "~~", "s": "~~", "strike": "~~", "code": "`"}
+
+
+def _html_to_markdown(node: Tag) -> str:
+    """Turn an old.reddit rendered ``div.md`` subtree back into Reddit markdown.
+
+    The listing/page only exposes the *rendered* HTML, but the Telegram publisher expects
+    markdown (that is how bodies arrived from the old JSON API). Reconstructing markdown keeps
+    paragraph breaks, links and emphasis so the existing markdown→Telegram pipeline formats
+    bodies exactly as it did before the switch to HTML scraping.
+    """
+    out: list[str] = []
+    for child in node.children:
+        if isinstance(child, NavigableString):
+            out.append(str(child))
+            continue
+        if not isinstance(child, Tag):
+            continue
+        name = child.name
+        inner = _html_to_markdown(child)
+        if name == "p":
+            out.append(inner.strip() + "\n\n")
+        elif name in _INLINE_MD:
+            marker = _INLINE_MD[name]
+            out.append(f"{marker}{inner}{marker}")
+        elif name == "a":
+            out.append(f"[{inner}]({child.get('href', '')})")
+        elif name == "br":
+            out.append("\n")
+        elif name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            out.append(f"# {inner.strip()}\n\n")
+        elif name == "blockquote":
+            quoted = "\n".join(f"> {line}" for line in inner.strip().split("\n"))
+            out.append(quoted + "\n\n")
+        elif name == "li":
+            out.append(f"- {inner.strip()}\n")
+        elif name in ("ul", "ol"):
+            out.append(inner + "\n")
+        elif name == "pre":
+            out.append(f"```\n{child.get_text().strip()}\n```\n\n")
+        elif name == "hr":
+            out.append("\n---\n\n")
+        else:
+            out.append(inner)
+    return "".join(out)
+
+
+def _selftext_from_md(md: Tag) -> str | None:
+    """Extract a post body as markdown from its rendered ``div.md`` element."""
+    text = re.sub(r"\n{3,}", "\n\n", _html_to_markdown(md)).strip()
+    return text or None
+
+
 def _parse_thing(thing) -> dict | None:
     """Parse one old.reddit ``div.thing`` link element into a post dict."""
     if thing.get("data-promoted") == "true":
@@ -100,7 +153,7 @@ def _parse_thing(thing) -> dict | None:
     selftext = None
     md = thing.select_one("div.usertext-body div.md")
     if md:
-        selftext = md.get_text("\n", strip=True) or None
+        selftext = _selftext_from_md(md)
 
     preview_url = None
     thumb = thing.select_one("a.thumbnail img")
@@ -180,7 +233,7 @@ def _select_selftext(page_html: str, reddit_id: str) -> str | None:
     md = thing.select_one("div.expando div.usertext-body div.md") or thing.select_one("div.usertext-body div.md")
     if not md:
         return None
-    return md.get_text("\n", strip=True) or None
+    return _selftext_from_md(md)
 
 
 async def enrich_post(client: httpx.AsyncClient, post: dict) -> None:
