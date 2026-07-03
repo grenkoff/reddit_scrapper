@@ -6,11 +6,9 @@ from httpx import Response
 
 from src.config import Config
 from src.scraper.reddit import (
-    _fetch_gallery_images,
-    _fetch_preview_image,
-    _fetch_selftext,
     _select_preview_image,
     _select_selftext,
+    enrich_post,
     fetch_fresh_hls_url,
     fetch_top_comments,
     fetch_top_posts,
@@ -115,46 +113,7 @@ async def test_fetch_top_comments_text_only_has_no_media():
     assert high["media_type"] is None
 
 
-# --- _fetch_gallery_images ---
-
-
-@respx.mock
-async def test_fetch_gallery_images_scopes_to_tiles_and_picks_largest_signed():
-    # Only the gallery tiles count: the largest signed width per image wins, unsigned variants
-    # are skipped, and images from comments / "read next" / thumbnail must NOT leak in.
-    page_html = (
-        '<div class="sitetable linklisting"><div class="thing">'
-        '<div class="media-preview-content">'
-        '<a class="gallery-item-thumbnail-link" href="https://preview.redd.it/aaa.jpg?width=1170&amp;s=BIG">'
-        '<img class="gallery-tile-content" src="https://preview.redd.it/aaa.jpg?width=108&amp;s=SMALL"/></a>'
-        '<a class="gallery-item-thumbnail-link" href="https://preview.redd.it/unsigned.jpg?width=140">'
-        '<img class="gallery-tile-content" src="https://preview.redd.it/bbb.jpg?width=960&amp;s=B"/></a>'
-        "</div></div></div>"
-        '<a class="thumbnail"><img src="https://preview.redd.it/THUMB.jpg?s=T"/></a>'
-        '<div class="commentarea"><div class="sitetable"><div class="comment"><div class="md">'
-        '<p><a href="https://preview.redd.it/COMMENT.jpg?s=CMT">&lt;image&gt;</a></p></div></div></div></div>'
-    )
-    respx.get(COMMENTS_URL).mock(return_value=Response(200, html=page_html))
-    async with httpx.AsyncClient() as client:
-        urls = await _fetch_gallery_images(client, SAMPLE_POST)
-    assert urls == [
-        "https://preview.redd.it/aaa.jpg?width=1170&s=BIG",
-        "https://preview.redd.it/bbb.jpg?width=960&s=B",
-    ]
-    joined = " ".join(urls)
-    assert "COMMENT.jpg" not in joined
-    assert "THUMB.jpg" not in joined
-    assert "unsigned.jpg" not in joined
-
-
-@respx.mock
-async def test_fetch_gallery_images_none_on_error():
-    respx.get(COMMENTS_URL).mock(return_value=Response(500))
-    async with httpx.AsyncClient() as client:
-        assert await _fetch_gallery_images(client, SAMPLE_POST) is None
-
-
-# --- _select_selftext / _fetch_selftext ---
+# --- _select_selftext (page parser) ---
 
 POST_PAGE_HTML = (
     '<div class="content">'
@@ -166,6 +125,25 @@ POST_PAGE_HTML = (
     '<div class="usertext-body"><div class="md"><p>a comment body must be ignored</p></div></div>'
     "</div></div></div>"
     "</div>"
+)
+
+GALLERY_PAGE_HTML = (
+    '<div class="sitetable linklisting"><div class="thing">'
+    '<div class="media-preview-content">'
+    '<a class="gallery-item-thumbnail-link" href="https://preview.redd.it/aaa.jpg?width=1170&amp;s=BIG">'
+    '<img class="gallery-tile-content" src="https://preview.redd.it/aaa.jpg?width=108&amp;s=SMALL"/></a>'
+    '<a class="gallery-item-thumbnail-link" href="https://preview.redd.it/unsigned.jpg?width=140">'
+    '<img class="gallery-tile-content" src="https://preview.redd.it/bbb.jpg?width=960&amp;s=B"/></a>'
+    "</div></div></div>"
+    '<a class="thumbnail"><img src="https://preview.redd.it/THUMB.jpg?s=T"/></a>'
+    '<div class="commentarea"><div class="sitetable"><div class="comment"><div class="md">'
+    '<p><a href="https://preview.redd.it/COMMENT.jpg?s=CMT">&lt;image&gt;</a></p></div></div></div></div>'
+)
+
+PREVIEW_PAGE_HTML = (
+    "<html><head>"
+    '<meta property="og:image" content="https://external-preview.redd.it/big.jpg?width=1080&amp;s=SIG"/>'
+    "</head><body></body></html>"
 )
 
 
@@ -183,62 +161,6 @@ def test_select_selftext_none_when_thing_absent():
     assert _select_selftext(POST_PAGE_HTML, "t3_missing") is None
 
 
-@respx.mock
-async def test_fetch_selftext_returns_body():
-    post = {"reddit_id": "t3_txt", "url": "https://reddit.com/r/x/comments/txt/t/"}
-    respx.get("https://old.reddit.com/r/x/comments/txt/t/").mock(return_value=Response(200, html=POST_PAGE_HTML))
-    async with httpx.AsyncClient() as client:
-        assert await _fetch_selftext(client, post) == "Recovered body line one.\nLine two."
-
-
-@respx.mock
-async def test_fetch_selftext_none_on_error():
-    post = {"reddit_id": "t3_txt", "url": "https://reddit.com/r/x/comments/txt/t/"}
-    respx.get("https://old.reddit.com/r/x/comments/txt/t/").mock(return_value=Response(500))
-    async with httpx.AsyncClient() as client:
-        assert await _fetch_selftext(client, post) is None
-
-
-@respx.mock
-async def test_fetch_top_posts_recovers_missing_selftext_from_post_page():
-    # A self post whose listing HTML carries no body — the scraper must refetch the post page.
-    listing = (
-        '<div class="thing id-t3_txt self" data-fullname="t3_txt" data-author="carol"'
-        ' data-subreddit="AskReddit" data-url="https://www.reddit.com/r/AskReddit/comments/txt/q/"'
-        ' data-domain="self.AskReddit" data-permalink="/r/AskReddit/comments/txt/q/"'
-        ' data-score="10" data-comments-count="1" data-timestamp="1700000000000">'
-        '<p class="title"><a class="title" href="#">Just a title</a></p>'
-        "</div>"
-    )
-    respx.get("https://old.reddit.com/top/").mock(return_value=Response(200, html=listing))
-    respx.get("https://old.reddit.com/r/AskReddit/comments/txt/q/").mock(
-        return_value=Response(200, html=POST_PAGE_HTML)
-    )
-    posts = await fetch_top_posts(CONFIG)
-    txt = next(p for p in posts if p["reddit_id"] == "t3_txt")
-    assert txt["selftext"] == "Recovered body line one.\nLine two."
-
-
-@respx.mock
-async def test_fetch_top_posts_keeps_listing_selftext_without_refetch():
-    # When the listing already has the body, no post-page request should be needed.
-    route = respx.get("https://old.reddit.com/r/AskReddit/comments/text1/q/").mock(return_value=Response(500))
-    respx.get("https://old.reddit.com/top/").mock(return_value=Response(200, html=LISTING_HTML))
-    posts = await fetch_top_posts(CONFIG)
-    txt = next(p for p in posts if p["reddit_id"] == "t3_text1")
-    assert txt["selftext"] == "This is the body of the text post."
-    assert not route.called
-
-
-# --- _select_preview_image / _fetch_preview_image ---
-
-PREVIEW_PAGE_HTML = (
-    "<html><head>"
-    '<meta property="og:image" content="https://external-preview.redd.it/big.jpg?width=1080&amp;s=SIG"/>'
-    "</head><body></body></html>"
-)
-
-
 def test_select_preview_image_reads_og_image():
     assert _select_preview_image(PREVIEW_PAGE_HTML) == "https://external-preview.redd.it/big.jpg?width=1080&s=SIG"
 
@@ -252,63 +174,104 @@ def test_select_preview_image_none_when_absent():
     assert _select_preview_image("<html><head></head></html>") is None
 
 
+# --- enrich_post (per-new-post page enrichment) ---
+
+
 @respx.mock
-async def test_fetch_preview_image_returns_url():
-    post = {"reddit_id": "t3_lnk", "url": "https://reddit.com/r/x/comments/lnk/l/"}
-    respx.get("https://old.reddit.com/r/x/comments/lnk/l/").mock(return_value=Response(200, html=PREVIEW_PAGE_HTML))
+async def test_enrich_recovers_body_for_media_post():
+    # The core fix: an image post that carries a text body must get it from its page.
+    post = {"reddit_id": "t3_txt", "url": "https://reddit.com/r/x/comments/txt/t/", "post_type": "image"}
+    respx.get("https://old.reddit.com/r/x/comments/txt/t/").mock(return_value=Response(200, html=POST_PAGE_HTML))
     async with httpx.AsyncClient() as client:
-        assert await _fetch_preview_image(client, post) == "https://external-preview.redd.it/big.jpg?width=1080&s=SIG"
+        await enrich_post(client, post)
+    assert post["selftext"] == "Recovered body line one.\nLine two."
 
 
 @respx.mock
-async def test_fetch_preview_image_none_on_error():
-    post = {"reddit_id": "t3_lnk", "url": "https://reddit.com/r/x/comments/lnk/l/"}
-    respx.get("https://old.reddit.com/r/x/comments/lnk/l/").mock(return_value=Response(500))
+async def test_enrich_recovers_body_for_text_post():
+    post = {"reddit_id": "t3_txt", "url": "https://reddit.com/r/x/comments/txt/t/", "post_type": "text"}
+    respx.get("https://old.reddit.com/r/x/comments/txt/t/").mock(return_value=Response(200, html=POST_PAGE_HTML))
     async with httpx.AsyncClient() as client:
-        assert await _fetch_preview_image(client, post) is None
+        await enrich_post(client, post)
+    assert post["selftext"] == "Recovered body line one.\nLine two."
 
 
 @respx.mock
-async def test_fetch_top_posts_upgrades_link_thumbnail_to_og_image():
-    # A link post whose listing carries only a tiny thumbnail — the scraper must refetch the
-    # post page and replace preview_url with the full-size og:image.
-    listing = (
-        '<div class="thing id-t3_lnk link" data-fullname="t3_lnk" data-author="erin"'
-        ' data-subreddit="news" data-url="https://example.com/article" data-domain="example.com"'
-        ' data-permalink="/r/news/comments/lnk/headline/"'
-        ' data-score="321" data-comments-count="89" data-timestamp="1700000000000">'
-        '<a class="thumbnail" href="#"><img src="//b.thumbs.redditmedia.com/tiny.jpg"></a>'
-        '<a class="title" href="#">An external article</a>'
-        "</div>"
-    )
-    respx.get("https://old.reddit.com/top/").mock(return_value=Response(200, html=listing))
-    respx.get("https://old.reddit.com/r/news/comments/lnk/headline/").mock(
-        return_value=Response(200, html=PREVIEW_PAGE_HTML)
-    )
-    posts = await fetch_top_posts(CONFIG)
-    lnk = next(p for p in posts if p["reddit_id"] == "t3_lnk")
-    assert lnk["preview_url"] == "https://external-preview.redd.it/big.jpg?width=1080&s=SIG"
+async def test_enrich_body_none_on_page_error():
+    post = {
+        "reddit_id": "t3_txt",
+        "url": "https://reddit.com/r/x/comments/txt/t/",
+        "post_type": "image",
+        "selftext": None,
+    }
+    respx.get("https://old.reddit.com/r/x/comments/txt/t/").mock(return_value=Response(500))
+    async with httpx.AsyncClient() as client:
+        await enrich_post(client, post)
+    assert post["selftext"] is None
 
 
 @respx.mock
-async def test_fetch_top_posts_keeps_thumbnail_when_og_image_missing():
-    # If the post page has no usable og:image, keep the listing thumbnail as a fallback.
-    listing = (
-        '<div class="thing id-t3_lnk link" data-fullname="t3_lnk" data-author="erin"'
-        ' data-subreddit="news" data-url="https://example.com/article" data-domain="example.com"'
-        ' data-permalink="/r/news/comments/lnk/headline/"'
-        ' data-score="321" data-comments-count="89" data-timestamp="1700000000000">'
-        '<a class="thumbnail" href="#"><img src="//b.thumbs.redditmedia.com/tiny.jpg"></a>'
-        '<a class="title" href="#">An external article</a>'
-        "</div>"
-    )
-    respx.get("https://old.reddit.com/top/").mock(return_value=Response(200, html=listing))
-    respx.get("https://old.reddit.com/r/news/comments/lnk/headline/").mock(
-        return_value=Response(200, html="<html><head></head></html>")
-    )
-    posts = await fetch_top_posts(CONFIG)
-    lnk = next(p for p in posts if p["reddit_id"] == "t3_lnk")
-    assert lnk["preview_url"] == "https://b.thumbs.redditmedia.com/tiny.jpg"
+async def test_enrich_skips_fetch_when_nothing_needed():
+    # Body already present, not a gallery or link — no page request should happen.
+    route = respx.get(COMMENTS_URL).mock(return_value=Response(500))
+    post = {**SAMPLE_POST, "post_type": "image", "selftext": "already have it", "preview_url": None}
+    async with httpx.AsyncClient() as client:
+        await enrich_post(client, post)
+    assert post["selftext"] == "already have it"
+    assert not route.called
+
+
+@respx.mock
+async def test_enrich_gallery_fills_media_urls_scoped_to_tiles():
+    # Largest signed width per image wins; unsigned variants and comment/thumbnail images excluded.
+    post = {**SAMPLE_POST, "post_type": "gallery", "selftext": "x", "preview_url": None, "media_urls": None}
+    respx.get(COMMENTS_URL).mock(return_value=Response(200, html=GALLERY_PAGE_HTML))
+    async with httpx.AsyncClient() as client:
+        await enrich_post(client, post)
+    assert post["media_urls"] == [
+        "https://preview.redd.it/aaa.jpg?width=1170&s=BIG",
+        "https://preview.redd.it/bbb.jpg?width=960&s=B",
+    ]
+    joined = " ".join(post["media_urls"])
+    assert "COMMENT.jpg" not in joined and "THUMB.jpg" not in joined and "unsigned.jpg" not in joined
+
+
+@respx.mock
+async def test_enrich_upgrades_link_thumbnail_to_og_image():
+    post = {
+        **SAMPLE_POST,
+        "post_type": "link",
+        "selftext": "x",
+        "preview_url": "https://b.thumbs.redditmedia.com/tiny.jpg",
+    }
+    respx.get(COMMENTS_URL).mock(return_value=Response(200, html=PREVIEW_PAGE_HTML))
+    async with httpx.AsyncClient() as client:
+        await enrich_post(client, post)
+    assert post["preview_url"] == "https://external-preview.redd.it/big.jpg?width=1080&s=SIG"
+
+
+@respx.mock
+async def test_enrich_keeps_thumbnail_when_og_image_missing():
+    post = {
+        **SAMPLE_POST,
+        "post_type": "link",
+        "selftext": "x",
+        "preview_url": "https://b.thumbs.redditmedia.com/tiny.jpg",
+    }
+    respx.get(COMMENTS_URL).mock(return_value=Response(200, html="<html><head></head></html>"))
+    async with httpx.AsyncClient() as client:
+        await enrich_post(client, post)
+    assert post["preview_url"] == "https://b.thumbs.redditmedia.com/tiny.jpg"
+
+
+@respx.mock
+async def test_enrich_link_without_preview_skips_fetch():
+    # A link post with no listing thumbnail and an existing body needs no page fetch.
+    route = respx.get(COMMENTS_URL).mock(return_value=Response(500))
+    post = {**SAMPLE_POST, "post_type": "link", "selftext": "x", "preview_url": None}
+    async with httpx.AsyncClient() as client:
+        await enrich_post(client, post)
+    assert not route.called
 
 
 # --- fetch_fresh_hls_url ---

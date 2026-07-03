@@ -95,11 +95,12 @@ def _parse_thing(thing) -> dict | None:
         hls_url = f"https://v.redd.it/{vid}/HLSPlaylist.m3u8"
         video_url = f"https://v.redd.it/{vid}/DASH_720.mp4"
 
+    # Any post type can carry a text body (Reddit's "image/link + text" posts), so read it
+    # regardless of type. The listing often omits it — enrich_post refetches the page then.
     selftext = None
-    if post_type == "text":
-        md = thing.select_one("div.usertext-body div.md")
-        if md:
-            selftext = md.get_text("\n", strip=True) or None
+    md = thing.select_one("div.usertext-body div.md")
+    if md:
+        selftext = md.get_text("\n", strip=True) or None
 
     preview_url = None
     thumb = thing.select_one("a.thumbnail img")
@@ -155,15 +156,15 @@ def _select_gallery_urls(page_html: str) -> list[str] | None:
     return [best[path][1] for path in order][:20] or None
 
 
-async def _fetch_gallery_images(client: httpx.AsyncClient, post: dict) -> list[str] | None:
-    """Fetch a gallery post's page and extract its image URLs."""
+async def _fetch_post_page(client: httpx.AsyncClient, post: dict) -> str | None:
+    """Fetch a post's own old.reddit page HTML (body, gallery tiles and og:image all live here)."""
     permalink = post["url"].removeprefix("https://reddit.com")
     try:
-        response = await _get_with_retry(client, f"{OLD_REDDIT}{permalink}", {}, label=f"gallery {post['reddit_id']}")
+        response = await _get_with_retry(client, f"{OLD_REDDIT}{permalink}", {}, label=f"page {post['reddit_id']}")
     except Exception:
-        logger.warning("Failed to fetch gallery images for %s", post["reddit_id"])
+        logger.warning("Failed to fetch post page for %s", post["reddit_id"])
         return None
-    return _select_gallery_urls(response.text)
+    return response.text
 
 
 def _select_selftext(page_html: str, reddit_id: str) -> str | None:
@@ -182,19 +183,32 @@ def _select_selftext(page_html: str, reddit_id: str) -> str | None:
     return md.get_text("\n", strip=True) or None
 
 
-async def _fetch_selftext(client: httpx.AsyncClient, post: dict) -> str | None:
-    """Fetch a text post's page to recover a body the listing HTML omitted.
+async def enrich_post(client: httpx.AsyncClient, post: dict) -> None:
+    """Fetch a new post's own page once to recover what the /top/ listing omits.
 
-    old.reddit's listing does not always inline the full self-text (long posts load it on
-    expand), so a title-only text post is refetched from its own page.
+    The listing does not reliably inline self-text (even for image/link posts that carry a body),
+    exposes only a tiny thumbnail for links, and never lists gallery tiles. Fetching the page once
+    fills all three. Called only for posts not yet in the DB, so a page is fetched at most once per
+    post instead of on every scrape.
     """
-    permalink = post["url"].removeprefix("https://reddit.com")
-    try:
-        response = await _get_with_retry(client, f"{OLD_REDDIT}{permalink}", {}, label=f"selftext {post['reddit_id']}")
-    except Exception:
-        logger.warning("Failed to fetch selftext for %s", post["reddit_id"])
-        return None
-    return _select_selftext(response.text, post["reddit_id"])
+    needs_gallery = post["post_type"] == "gallery"
+    needs_preview = post["post_type"] == "link" and bool(post.get("preview_url"))
+    needs_body = not post.get("selftext")
+    if not (needs_gallery or needs_preview or needs_body):
+        return
+
+    page = await _fetch_post_page(client, post)
+    if page is None:
+        return
+
+    if needs_body:
+        post["selftext"] = _select_selftext(page, post["reddit_id"])
+    if needs_gallery:
+        post["media_urls"] = _select_gallery_urls(page)
+    if needs_preview:
+        bigger = _select_preview_image(page)
+        if bigger:
+            post["preview_url"] = bigger
 
 
 def _select_preview_image(page_html: str) -> str | None:
@@ -215,42 +229,18 @@ def _select_preview_image(page_html: str) -> str | None:
     return url
 
 
-async def _fetch_preview_image(client: httpx.AsyncClient, post: dict) -> str | None:
-    """Fetch a link post's page to recover the large preview the listing thumbnail shrinks."""
-    permalink = post["url"].removeprefix("https://reddit.com")
-    try:
-        response = await _get_with_retry(client, f"{OLD_REDDIT}{permalink}", {}, label=f"preview {post['reddit_id']}")
-    except Exception:
-        logger.warning("Failed to fetch preview image for %s", post["reddit_id"])
-        return None
-    return _select_preview_image(response.text)
-
-
 async def fetch_top_posts(config: Config) -> list[dict]:
+    """Parse the /top/ listing into posts. Per-post page enrichment (body, gallery, preview)
+    happens later in enrich_post, only for posts new to the DB, to avoid refetching the whole
+    listing's pages on every scrape."""
     url = f"{OLD_REDDIT}/top/"
     params = {"t": "day", "limit": config.posts_limit}
 
     async with httpx.AsyncClient(timeout=30, follow_redirects=True, http2=True) as client:
         response = await _get_with_retry(client, url, params, label="top posts")
-        soup = BeautifulSoup(response.text, "html.parser")
-        posts = [post for thing in soup.select("div.thing") if (post := _parse_thing(thing))]
 
-        for post in posts:
-            if post["post_type"] == "gallery":
-                # Space out per-post page fetches so old.reddit doesn't rate-limit the burst.
-                await asyncio.sleep(2)
-                post["media_urls"] = await _fetch_gallery_images(client, post)
-            elif post["post_type"] == "text" and not post["selftext"]:
-                # Listing omitted the body — refetch the post page so it doesn't publish title-only.
-                await asyncio.sleep(2)
-                post["selftext"] = await _fetch_selftext(client, post)
-            elif post["post_type"] == "link" and post["preview_url"]:
-                # Listing only has a tiny thumbnail — refetch for the full-size og:image preview.
-                await asyncio.sleep(2)
-                bigger = await _fetch_preview_image(client, post)
-                if bigger:
-                    post["preview_url"] = bigger
-
+    soup = BeautifulSoup(response.text, "html.parser")
+    posts = [post for thing in soup.select("div.thing") if (post := _parse_thing(thing))]
     logger.info("Fetched %d posts from Reddit", len(posts))
     return posts
 
