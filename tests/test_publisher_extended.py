@@ -1,24 +1,36 @@
+import io
 import re
 
 import httpx
 import respx
 from httpx import Response
+from PIL import Image
 
 from src.config import Config
 from src.publisher.telegram import (
     MAX_CAPTION_LEN,
     MAX_MESSAGE_LEN,
+    TELEGRAM_MAX_PIXEL_SUM,
     _build_footer,
     _build_media_texts,
     _chunk_text_evenly,
+    _fit_photo_for_telegram,
     _html_to_plain,
     _md_to_telegram_html,
     _publish_link,
     _publish_text_messages,
+    _safe_fit_photo,
+    _send_media_group,
     _send_message,
     _take_raw_chunk,
     publish_post,
 )
+
+
+def _jpeg(w: int, h: int) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), "green").save(buf, format="JPEG")
+    return buf.getvalue()
 
 
 def _tags_balanced(s: str) -> bool:
@@ -375,3 +387,44 @@ async def test_publish_text_first_message_ends_with_ellipsis_when_split():
         await _publish_text_messages(client, CONFIG, post)
     assert len(call_bodies) >= 2
     assert "..." in call_bodies[0]
+
+
+# --- gallery photo sizing (Telegram rejects width+height > 10000) ---
+
+
+def test_fit_photo_shrinks_oversized():
+    out = _fit_photo_for_telegram(_jpeg(6936, 4624))
+    w, h = Image.open(io.BytesIO(out)).size
+    assert w + h <= TELEGRAM_MAX_PIXEL_SUM
+
+
+def test_fit_photo_leaves_normal_image_untouched():
+    original = _jpeg(1000, 800)
+    assert _fit_photo_for_telegram(original) == original
+
+
+def test_safe_fit_photo_returns_original_on_bad_bytes():
+    assert _safe_fit_photo(b"not an image") == b"not an image"
+
+
+@respx.mock
+async def test_send_media_group_shrinks_oversized_gallery_photos(tmp_path):
+    big = tmp_path / "big.jpg"
+    big.write_bytes(_jpeg(6936, 4624))
+    small = tmp_path / "small.jpg"
+    small.write_bytes(_jpeg(1200, 900))
+
+    captured = {}
+
+    def handler(request):
+        captured["body"] = request.content
+        return Response(200, json={"result": [{"message_id": 5}]})
+
+    respx.post("https://api.telegram.org/bottesttoken/sendMediaGroup").mock(side_effect=handler)
+
+    async with httpx.AsyncClient() as client:
+        msg_id = await _send_media_group(client, CONFIG, [big, small], caption="cap")
+
+    assert msg_id == 5
+    # The oversized original (11560) must not be sent verbatim.
+    assert _jpeg(6936, 4624) not in captured["body"]

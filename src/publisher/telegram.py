@@ -36,6 +36,14 @@ def _fit_photo_for_telegram(photo_bytes: bytes) -> bytes:
     return buf.getvalue()
 
 
+def _safe_fit_photo(photo_bytes: bytes) -> bytes:
+    """_fit_photo_for_telegram but never raises — falls back to the original bytes."""
+    try:
+        return _fit_photo_for_telegram(photo_bytes)
+    except Exception:
+        return photo_bytes
+
+
 def _api_url(token: str, method: str) -> str:
     return TELEGRAM_API.format(token=token, method=method)
 
@@ -385,7 +393,9 @@ async def _send_media_group(
     paths: list[Path],
     caption: str | None = None,
 ) -> int | None:
-    files = {f"photo{i}": path.read_bytes() for i, path in enumerate(paths)}
+    # Reddit gallery originals can be huge (e.g. 6936px wide); Telegram rejects a photo whose
+    # width+height exceeds 10000, so shrink each one first (single photos already do this).
+    files = {f"photo{i}": _safe_fit_photo(path.read_bytes()) for i, path in enumerate(paths)}
     media = []
     for i, key in enumerate(files):
         entry: dict = {"type": "photo", "media": f"attach://{key}"}
