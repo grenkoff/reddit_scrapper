@@ -300,13 +300,14 @@ async def test_enrich_keeps_thumbnail_when_og_image_missing():
 
 
 @respx.mock
-async def test_enrich_link_without_preview_skips_fetch():
-    # A link post with no listing thumbnail and an existing body needs no page fetch.
-    route = respx.get(COMMENTS_URL).mock(return_value=Response(500))
+async def test_enrich_link_gets_og_image_without_listing_thumbnail():
+    # old.reddit may omit the listing thumbnail even when the post has a large preview:
+    # enrich must still fetch the page and pull og:image, so preview_url isn't left empty.
     post = {**SAMPLE_POST, "post_type": "link", "selftext": "x", "preview_url": None}
+    respx.get(COMMENTS_URL).mock(return_value=Response(200, html=PREVIEW_PAGE_HTML))
     async with httpx.AsyncClient() as client:
         await enrich_post(client, post)
-    assert not route.called
+    assert post["preview_url"] == "https://external-preview.redd.it/big.jpg?width=1080&s=SIG"
 
 
 # --- fetch_fresh_hls_url ---
