@@ -245,7 +245,9 @@ async def enrich_post(client: httpx.AsyncClient, post: dict) -> None:
     post instead of on every scrape.
     """
     needs_gallery = post["post_type"] == "gallery"
-    needs_preview = post["post_type"] == "link" and bool(post.get("preview_url"))
+    # Try the page's og:image for every link post: old.reddit sometimes omits the listing
+    # thumbnail even when the post has a large preview, so don't gate on preview_url being set.
+    needs_preview = post["post_type"] == "link"
     needs_body = not post.get("selftext")
     if not (needs_gallery or needs_preview or needs_body):
         return
