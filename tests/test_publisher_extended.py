@@ -428,3 +428,32 @@ async def test_send_media_group_shrinks_oversized_gallery_photos(tmp_path):
     assert msg_id == 5
     # The oversized original (11560) must not be sent verbatim.
     assert _jpeg(6936, 4624) not in captured["body"]
+
+
+# --- even text distribution across messages ---
+
+
+def test_media_caption_not_greedily_packed():
+    # A body needing 2 messages should split evenly, not fill the caption to the brim.
+    post = {**BASE_POST, "post_type": "image", "content_url": "https://i.redd.it/a.jpg", "selftext": "word " * 300}
+    caption, overflow = _build_media_texts(post, CONFIG)
+    assert len(overflow) == 1
+    assert abs(len(caption) - len(overflow[0])) < 300  # roughly balanced
+    assert len(caption) < MAX_CAPTION_LEN - 80  # not packed to the limit
+
+
+async def test_text_post_messages_are_evenly_sized(monkeypatch):
+    lengths: list[int] = []
+
+    async def fake_send(client, config, text, *, reply_markup=None, reply_to=None):
+        lengths.append(len(text))
+        return 1
+
+    monkeypatch.setattr("src.publisher.telegram._send_message", fake_send)
+    post = {**BASE_POST, "post_type": "text", "selftext": "word " * 1400}
+    async with httpx.AsyncClient() as client:
+        await _publish_text_messages(client, CONFIG, post)
+
+    assert len(lengths) >= 2
+    # No sliver last message: spread stays tight.
+    assert max(lengths) - min(lengths) < 600

@@ -196,6 +196,20 @@ def _take_raw_chunk(raw: str, budget: int) -> tuple[str, str]:
     return _md_to_telegram_html(raw[:best]), raw[best:].lstrip()
 
 
+def _even_target(html_len: int, first_budget: int) -> tuple[int, int]:
+    """Balance text across messages so no message (especially the last) is a tiny sliver.
+
+    Returns ``(target, first_target)``: ``target`` is the even per-message HTML length; the first
+    message is smaller (a media caption, or a message that also carries the title), so its share is
+    capped at ``first_budget``. The rest of the messages hold ``MAX_MESSAGE_LEN``.
+    """
+    if html_len <= first_budget:
+        return html_len, html_len
+    n_total = 1 + math.ceil((html_len - first_budget) / MAX_MESSAGE_LEN)
+    target = math.ceil(html_len / n_total)
+    return target, min(target, first_budget)
+
+
 def _build_media_texts(post: dict, config: Config) -> tuple[str, list[str]]:
     """Build (caption, overflow_messages) for media posts.
 
@@ -226,7 +240,10 @@ def _build_media_texts(post: dict, config: Config) -> tuple[str, list[str]]:
         safe_title = _html.escape(post["title"])[: MAX_CAPTION_LEN - len("<b></b>")]
         return f"<b>{safe_title}</b>", _chunk_text_evenly(selftext, footer)
 
-    caption_text, remaining = _take_raw_chunk(selftext, caption_budget)
+    # Size the caption to an even share of the text, not the full budget: a packed caption
+    # followed by a tiny last message reads badly.
+    _, caption_target = _even_target(len(selftext_html) + len(footer_block), caption_budget)
+    caption_text, remaining = _take_raw_chunk(selftext, caption_target)
     caption = f"{title_block}{caption_text}"
 
     if not remaining:
@@ -445,28 +462,28 @@ async def _publish_text_messages(
     if len(f"{body}\n\n{footer}") <= MAX_MESSAGE_LEN:
         return await _send_message(client, config, f"{body}\n\n{footer}", reply_markup=reply_markup)
 
-    # Too long: split RAW text first, then convert each chunk individually.
-    # Splitting already-converted HTML would cut tags in half → invalid HTML.
-    raw_chunk_size = 3000
-    raw_chunks: list[str] = []
-    remaining = selftext_raw
-    while remaining:
-        if len(remaining) <= raw_chunk_size:
-            raw_chunks.append(remaining)
-            break
-        split = remaining.rfind(" ", 0, raw_chunk_size)
-        if split == -1:
-            split = raw_chunk_size
-        raw_chunks.append(remaining[:split])
-        remaining = remaining[split:].lstrip()
+    # Too long: split RAW text into evenly-sized chunks so no message is a tiny sliver, then
+    # convert each chunk individually (splitting already-converted HTML would cut tags in half).
+    title_block = f"{title_html}\n\n"
+    footer_block = f"\n\n{footer}"
+    first_budget = MAX_MESSAGE_LEN - len(title_block) - len("...")
+    target, first_target = _even_target(len(selftext_html) + len(footer_block), first_budget)
 
-    if not raw_chunks:
-        raw_chunks = [""]
+    html_chunks: list[str] = []
+    remaining = selftext_raw
+    budget = first_target
+    while remaining:
+        chunk_html, remaining = _take_raw_chunk(remaining, budget)
+        if not chunk_html:  # budget too small to take even one word — flush the rest
+            chunk_html, remaining = _md_to_telegram_html(remaining), ""
+        html_chunks.append(chunk_html)
+        budget = target
+    if not html_chunks:
+        html_chunks = [""]
 
     msg_id = None
-    last = len(raw_chunks) - 1
-    for i, raw_chunk in enumerate(raw_chunks):
-        chunk_html = _md_to_telegram_html(raw_chunk)
+    last = len(html_chunks) - 1
+    for i, chunk_html in enumerate(html_chunks):
         if i == 0:
             text = f"{title_html}\n\n{chunk_html}"
             if i == last:
