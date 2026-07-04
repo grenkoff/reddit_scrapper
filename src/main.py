@@ -122,6 +122,14 @@ async def _publish_comments_delayed(config, poller: "UpdatePoller", post: dict, 
         logger.warning("Failed to publish comments for %s", post["reddit_id"], exc_info=True)
 
 
+async def _drop_silently(post: dict, reason: str) -> bool:
+    """Mark a post handled without any Telegram notice — used when a notice adds no value,
+    e.g. an undownloadable v.redd.it video that Reddit itself has removed/blocked."""
+    logger.warning("%s %s — dropping without notice", reason, post["reddit_id"])
+    await mark_as_published(post["reddit_id"], 0)
+    return False
+
+
 async def _drop_with_notice(config, post: dict, reason: str) -> bool:
     """Mark a post handled but send a link-only notice so it isn't silently lost."""
     logger.warning("%s %s — sending link-only fallback", reason, post["reddit_id"])
@@ -168,7 +176,9 @@ async def publish_one(config, poller: "UpdatePoller") -> bool | None:
         if media_path:
             media_path = await asyncio.get_event_loop().run_in_executor(None, compress_video, media_path)
         if media_path is None:
-            return await _drop_with_notice(config, post, "Video download/compress failed for")
+            # Undownloadable v.redd.it videos are usually removed/blocked upstream — a link-only
+            # notice is noise, so drop the post quietly instead.
+            return await _drop_silently(post, "Video download/compress failed for")
     elif post["post_type"] == "gallery" and post.get("media_urls"):
         paths = [await download_image(url) for url in post["media_urls"]]
         media_paths = [p for p in paths if p is not None] or None

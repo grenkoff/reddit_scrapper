@@ -85,6 +85,39 @@ async def test_publish_one_sends_notice_when_media_download_fails(monkeypatch):
     assert notices == ["t3_lnk"]  # image posts that fail to download still send their link
 
 
+async def test_publish_one_video_download_failure_drops_without_notice(monkeypatch):
+    notices: list = []
+    published: dict = {}
+
+    async def fake_get(limit=None, max_age_hours=24):
+        return [{**LINK_POST, "post_type": "video", "video_url": "https://v.redd.it/x/DASH_720.mp4"}]
+
+    async def fake_fresh_hls(_config, _rid):
+        return None
+
+    async def fake_dl_video(_url, hls_url=None):
+        return None  # undownloadable video
+
+    async def fake_notice(_config, post):
+        notices.append(post["reddit_id"])
+        return 5
+
+    async def fake_mark(reddit_id, msg_id):
+        published[reddit_id] = msg_id
+
+    monkeypatch.setattr(main, "get_unpublished_posts", fake_get)
+    monkeypatch.setattr(main, "fetch_fresh_hls_url", fake_fresh_hls)
+    monkeypatch.setattr(main, "download_video_direct", fake_dl_video)
+    monkeypatch.setattr(main, "publish_failed_notice", fake_notice)
+    monkeypatch.setattr(main, "mark_as_published", fake_mark)
+
+    result = await main.publish_one(CONFIG, UpdatePoller(CONFIG))
+
+    assert result is False
+    assert notices == []  # no link-only notice for an undownloadable video
+    assert published == {"t3_lnk": 0}  # still marked handled so it isn't retried forever
+
+
 async def test_publish_one_downloads_link_preview_and_passes_photo_path(monkeypatch):
     captured: dict = {}
     cleaned: list = []
