@@ -5,7 +5,7 @@ import respx
 from httpx import Response
 
 from src.config import Config
-from src.scraper.reddit import _detect_post_type, fetch_top_posts
+from src.scraper.reddit import _detect_post_type, fetch_gallery_images, fetch_top_posts
 
 LISTING_RSS = Path("tests/fixtures/reddit_top.rss").read_bytes()
 LISTING_URL = "https://www.reddit.com/r/all/top/.rss"
@@ -115,10 +115,10 @@ async def test_parse_link_post_keeps_external_url_and_preview(posts):
     assert post["preview_url"] == "https://external-preview.redd.it/n.jpg?width=320&s=sig4"
 
 
-async def test_parse_gallery_degrades_to_link(posts):
-    """Gallery tiles lived on the post page, which is gone — publish the cover and the link."""
+async def test_parse_gallery_keeps_type_without_tiles(posts):
+    """The feed carries only a gallery's cover; its tiles are fetched separately."""
     post = posts["t3_gal1"]
-    assert post["post_type"] == "link"
+    assert post["post_type"] == "gallery"
     assert post["content_url"] == "https://www.reddit.com/gallery/gal1"
     assert post["preview_url"] == "https://preview.redd.it/g.jpg?width=320&s=sig3"
     assert post["media_urls"] is None
@@ -138,3 +138,40 @@ async def test_fetch_top_posts_retries_rate_limit_then_succeeds():
     posts = await fetch_top_posts(CONFIG)
     assert route.call_count == 2
     assert len(posts) == 5
+
+
+# --- fetch_gallery_images (tiles off the embed host) ---
+
+EMBED_HTML = Path("tests/fixtures/embed_gallery.html").read_text()
+GALLERY_POST = {"reddit_id": "t3_gal1", "url": "https://reddit.com/r/pics/comments/gal1/some_shots/"}
+EMBED_URL = "https://embed.reddit.com/r/pics/comments/gal1/some_shots/"
+
+
+@respx.mock
+async def test_fetch_gallery_images_picks_largest_signed_variant():
+    respx.get(EMBED_URL).mock(return_value=Response(200, html=EMBED_HTML))
+    urls = await fetch_gallery_images(GALLERY_POST)
+    assert urls == [
+        "https://preview.redd.it/some-shots-v0-aaa.jpg?width=1080&crop=smart&auto=webp&s=sig1080a",
+        "https://preview.redd.it/some-shots-v0-bbb.jpg?width=1080&crop=smart&auto=webp&s=sig1080b",
+    ]
+
+
+@respx.mock
+async def test_fetch_gallery_images_scoped_to_carousel():
+    """The cover above the carousel and images inside comments must not become gallery tiles."""
+    respx.get(EMBED_URL).mock(return_value=Response(200, html=EMBED_HTML))
+    urls = await fetch_gallery_images(GALLERY_POST)
+    assert not any("cover" in u or "comment" in u for u in urls)
+
+
+@respx.mock
+async def test_fetch_gallery_images_none_without_carousel():
+    respx.get(EMBED_URL).mock(return_value=Response(200, html="<html><body>removed</body></html>"))
+    assert await fetch_gallery_images(GALLERY_POST) is None
+
+
+@respx.mock
+async def test_fetch_gallery_images_none_on_error():
+    respx.get(EMBED_URL).mock(return_value=Response(500))
+    assert await fetch_gallery_images(GALLERY_POST) is None

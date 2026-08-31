@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import html
 import logging
 import re
@@ -19,49 +20,80 @@ logger = logging.getLogger(__name__)
 # challenge instead of HTML. The Atom feeds under www.reddit.com/<path>/.rss are the one surface
 # still open without auth, so that is what we scrape.
 REDDIT = "https://www.reddit.com"
+# The embed host renders a post server-side without the JS challenge, and it is the only anonymous
+# surface left that still lists a gallery's tiles (the feeds expose just the cover thumbnail).
+EMBED = "https://embed.reddit.com"
 # old.reddit blocks bot-looking User-Agents, so always present as a browser.
 BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 _ATOM = {"a": "http://www.w3.org/2005/Atom", "media": "http://search.yahoo.com/mrss/"}
 
-# Measured 2026-08-31: the feeds are rate-limited per IP in bursts, with no Retry-After header.
-# One request per 60s ran 13/13 clean; 30s spacing alternated 200/429 and 15s spacing failed 4 of 5.
-# Every Reddit request in this module goes through _rss_get, which serialises on this interval.
-_MIN_REQUEST_INTERVAL = 60.0
-_RATE_LIMIT_LOCK = asyncio.Lock()
-_last_request_at = 0.0
+
+class _Pacer:
+    """Serialises requests to one Reddit host and keeps consecutive ones an interval apart."""
+
+    def __init__(self, interval: float):
+        self.interval = interval
+        self.lock = asyncio.Lock()
+        self.last_at = 0.0
+
+    async def wait_for_slot(self) -> None:
+        delay = self.interval - (time.monotonic() - self.last_at)
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    def mark(self) -> None:
+        self.last_at = time.monotonic()
 
 
-def _headers() -> dict:
+# Measured 2026-08-31, both from a home IP. The feeds are rate-limited per IP in bursts with no
+# Retry-After header: one request per 60s ran 13/13 clean, 30s alternated 200/429, 15s failed 4 of
+# 5. The embed host is far looser — six requests 3s apart all returned 200 — and has its own budget,
+# so gallery lookups pace separately instead of eating the feeds' one-per-minute slot.
+_FEED_PACER = _Pacer(60.0)
+_EMBED_PACER = _Pacer(3.0)
+
+
+def _headers(accept: str) -> dict:
     return {
         "User-Agent": BROWSER_UA,
-        "Accept": "application/atom+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": accept,
         "Accept-Language": "en-US,en;q=0.9",
     }
 
 
-async def _rss_get(client: httpx.AsyncClient, url: str, params: dict, *, label: str) -> httpx.Response:
-    """GET a Reddit feed, pacing requests globally and retrying the 403/429 rate-limit responses.
+async def _paced_get(
+    client: httpx.AsyncClient,
+    pacer: _Pacer,
+    url: str,
+    params: dict,
+    *,
+    accept: str,
+    label: str,
+) -> httpx.Response:
+    """GET a Reddit URL on its host's pacing budget, retrying the 403/429 rate-limit responses.
 
-    The pacing lock is held for the whole request so two concurrent callers (an hourly scrape and
-    a publish-time comment fetch) cannot interleave into a burst that trips the limiter.
+    The lock is held across retries so two concurrent callers (an hourly scrape and a publish-time
+    comment fetch) cannot interleave into a burst that trips the limiter.
     """
-    global _last_request_at
-    async with _RATE_LIMIT_LOCK:
+    async with pacer.lock:
         for attempt in range(3):
-            wait = _MIN_REQUEST_INTERVAL - (time.monotonic() - _last_request_at)
-            if wait > 0:
-                await asyncio.sleep(wait)
-            response = await client.get(url, params=params, headers=_headers())
-            _last_request_at = time.monotonic()
+            await pacer.wait_for_slot()
+            response = await client.get(url, params=params, headers=_headers(accept))
+            pacer.mark()
             # Reddit sends no Retry-After on these, and a transient 403 clears on the next slot,
             # so just wait out another full interval instead of guessing a shorter backoff.
             if response.status_code in (403, 429) and attempt < 2:
-                logger.info("Reddit %d on %s, retrying after %.0fs", response.status_code, label, _MIN_REQUEST_INTERVAL)
+                logger.info("Reddit %d on %s, retrying after %.0fs", response.status_code, label, pacer.interval)
                 continue
             response.raise_for_status()
             return response
         return response
+
+
+async def _rss_get(client: httpx.AsyncClient, url: str, params: dict, *, label: str) -> httpx.Response:
+    accept = "application/atom+xml,application/xml;q=0.9,*/*;q=0.8"
+    return await _paced_get(client, _FEED_PACER, url, params, accept=accept, label=label)
 
 
 def _detect_post_type(content_url: str | None, domain: str = "") -> str:
@@ -214,12 +246,6 @@ def _parse_entry(entry: ET.Element, rank: int, total: int) -> dict | None:
         hls_url = f"https://v.redd.it/{vid}/HLSPlaylist.m3u8"
         video_url = f"https://v.redd.it/{vid}/DASH_720.mp4"
 
-    if post_type == "gallery":
-        # The feed exposes a gallery's cover thumbnail only — the tiles lived on the post page,
-        # which is no longer reachable. Publishing the cover plus the gallery link beats dropping
-        # the post, and that is exactly how a link post is already handled downstream.
-        post_type = "link"
-
     md = soup.select_one("div.md")
     return {
         "reddit_id": reddit_id,
@@ -251,6 +277,60 @@ def _entries(xml: bytes) -> list[ET.Element]:
     except ET.ParseError:
         logger.warning("Reddit returned unparseable XML")
         return []
+
+
+def _largest_variant(img) -> str | None:
+    """Pick an ``img``'s biggest source.
+
+    Tiles are served responsively: ``src`` holds a 640px render and ``srcset`` the ladder up to
+    1080px. preview.redd.it 403s any variant whose ``s=`` signature is missing or edited, so the
+    URLs are taken exactly as served, never rebuilt with a wider ``width=``.
+    """
+    best_url, best_width = None, -1
+    for candidate in (img.get("srcset") or "").split(","):
+        parts = candidate.strip().split()
+        if len(parts) == 2 and parts[1].endswith("w"):
+            with contextlib.suppress(ValueError):
+                width = int(parts[1][:-1])
+                if width > best_width:
+                    best_url, best_width = parts[0], width
+    url = best_url or img.get("src")
+    return url if url and "s=" in url else None
+
+
+async def fetch_gallery_images(post: dict) -> list[str] | None:
+    """Read a gallery post's tiles off its embed page.
+
+    The Atom feed gives a gallery only its cover thumbnail, so without this a seven-image post
+    would publish as a single 140px crop. Scoping to the carousel keeps out the page's other
+    imagery; ordering follows the carousel, which is the order Reddit shows.
+    """
+    permalink = post["url"].removeprefix("https://reddit.com")
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True, http2=True) as client:
+            response = await _paced_get(
+                client,
+                _EMBED_PACER,
+                f"{EMBED}{permalink}",
+                {},
+                accept="text/html,application/xhtml+xml,*/*;q=0.8",
+                label=f"gallery {post['reddit_id']}",
+            )
+    except Exception:
+        logger.warning("Failed to fetch gallery page for %s", post["reddit_id"], exc_info=True)
+        return None
+
+    carousel = BeautifulSoup(response.text, "html.parser").select_one("gallery-carousel")
+    if not carousel:
+        return None
+
+    by_media_id: dict[str, str] = {}
+    for img in carousel.select("img"):
+        url = _largest_variant(img)
+        if not url or "preview.redd.it" not in url:
+            continue
+        by_media_id.setdefault(url.split("?", 1)[0].rsplit("/", 1)[-1], url)
+    return list(by_media_id.values())[:20] or None
 
 
 async def fetch_top_posts(config: Config) -> list[dict]:

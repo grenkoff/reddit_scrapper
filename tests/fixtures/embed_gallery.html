@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head><title>r/pics - Some shots</title></head>
+<body>
+  <shreddit-embed>
+    <img src="https://preview.redd.it/cover.jpg?width=140&amp;crop=1:1,smart&amp;auto=webp&amp;s=cover" alt="cover outside the carousel"/>
+    <gallery-carousel>
+      <ul>
+        <li>
+          <img loading="lazy" alt="tile one"
+               src="https://preview.redd.it/some-shots-v0-aaa.jpg?width=640&amp;crop=smart&amp;auto=webp&amp;s=sig640a"
+               srcset="https://preview.redd.it/some-shots-v0-aaa.jpg?width=320&amp;crop=smart&amp;auto=webp&amp;s=sig320a 320w, https://preview.redd.it/some-shots-v0-aaa.jpg?width=640&amp;crop=smart&amp;auto=webp&amp;s=sig640a 640w, https://preview.redd.it/some-shots-v0-aaa.jpg?width=1080&amp;crop=smart&amp;auto=webp&amp;s=sig1080a 1080w"/>
+        </li>
+        <li>
+          <img loading="lazy" alt="tile two"
+               src="https://preview.redd.it/some-shots-v0-bbb.jpg?width=640&amp;crop=smart&amp;auto=webp&amp;s=sig640b"
+               srcset="https://preview.redd.it/some-shots-v0-bbb.jpg?width=640&amp;crop=smart&amp;auto=webp&amp;s=sig640b 640w, https://preview.redd.it/some-shots-v0-bbb.jpg?width=1080&amp;crop=smart&amp;auto=webp&amp;s=sig1080b 1080w"/>
+        </li>
+        <li>
+          <!-- the same tile repeated by the carousel's looping markup -->
+          <img loading="lazy" alt="tile one again"
+               src="https://preview.redd.it/some-shots-v0-aaa.jpg?width=320&amp;crop=smart&amp;auto=webp&amp;s=sig320a"/>
+        </li>
+        <li>
+          <!-- an unsigned variant must be dropped: preview.redd.it 403s it -->
+          <img loading="lazy" alt="tile three" src="https://preview.redd.it/some-shots-v0-ccc.jpg?width=640"/>
+        </li>
+      </ul>
+    </gallery-carousel>
+    <div class="comments">
+      <img src="https://preview.redd.it/comment-image.jpg?width=640&amp;s=sigcomment" alt="image in a comment"/>
+    </div>
+  </shreddit-embed>
+</body>
+</html>
