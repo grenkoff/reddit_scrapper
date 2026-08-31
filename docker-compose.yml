@@ -1,20 +1,30 @@
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: reddit_scrapper
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+    # 5432 on this host belongs to another project's database, so expose the port one over.
+    # The bot reaches Postgres over the compose network and ignores this mapping.
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d reddit_scrapper"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
 
   bot:
     build: .
     restart: unless-stopped
-    env_file: .env.local
-    depends_on: [postgres]
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8080:8080"
     volumes:

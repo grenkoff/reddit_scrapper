@@ -1,0 +1,17 @@
+# Secrets reach the container through compose's env_file, so keep them out of the image.
+.env
+.env.local
+.env.*.bak
+
+.git
+.github
+.venv
+tests
+tmp
+data
+*.db
+*.log
+__pycache__
+.pytest_cache
+.ruff_cache
+.coverage
