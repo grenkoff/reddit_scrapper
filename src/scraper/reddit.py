@@ -2,7 +2,10 @@ import asyncio
 import html
 import logging
 import re
+import time
+import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
+from urllib.parse import urlparse
 
 import httpx
 from bs4 import BeautifulSoup, NavigableString, Tag
@@ -11,37 +14,54 @@ from src.config import Config
 
 logger = logging.getLogger(__name__)
 
-# Reddit closed anonymous access to its .json API (403 from any IP), so we scrape
-# the old.reddit.com HTML instead — it still serves listings/comments without auth.
-OLD_REDDIT = "https://old.reddit.com"
+# Reddit closed anonymous access to its .json API in June 2026, and by August 2026 old.reddit.com
+# followed: every logged-out request there 302s to /login/?reason=lor2. www.reddit.com serves a JS
+# challenge instead of HTML. The Atom feeds under www.reddit.com/<path>/.rss are the one surface
+# still open without auth, so that is what we scrape.
+REDDIT = "https://www.reddit.com"
 # old.reddit blocks bot-looking User-Agents, so always present as a browser.
 BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-# Gallery images live in the post's gallery tiles. Selecting these classes scopes
-# extraction to the actual gallery, excluding comment images, the post thumbnail, and
-# "read next" suggestions that a whole-page scan would wrongly pull in.
-_GALLERY_TILE_SELECTOR = "a.gallery-item-thumbnail-link[href], img.gallery-tile-content[src]"
+
+_ATOM = {"a": "http://www.w3.org/2005/Atom", "media": "http://search.yahoo.com/mrss/"}
+
+# Measured 2026-08-31: the feeds are rate-limited per IP in bursts, with no Retry-After header.
+# One request per 60s ran 13/13 clean; 30s spacing alternated 200/429 and 15s spacing failed 4 of 5.
+# Every Reddit request in this module goes through _rss_get, which serialises on this interval.
+_MIN_REQUEST_INTERVAL = 60.0
+_RATE_LIMIT_LOCK = asyncio.Lock()
+_last_request_at = 0.0
 
 
 def _headers() -> dict:
     return {
         "User-Agent": BROWSER_UA,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "application/atom+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     }
 
 
-async def _get_with_retry(client: httpx.AsyncClient, url: str, params: dict, *, label: str) -> httpx.Response:
-    """GET with retry/backoff on old.reddit's 403/429 rate-limiting."""
-    for attempt in range(3):
-        response = await client.get(url, params=params, headers=_headers())
-        if response.status_code in (403, 429) and attempt < 2:
-            retry_after = int(response.headers.get("Retry-After", (attempt + 1) * 5))
-            logger.info("Reddit %d on %s, retrying in %ds", response.status_code, label, retry_after)
-            await asyncio.sleep(retry_after)
-            continue
-        response.raise_for_status()
+async def _rss_get(client: httpx.AsyncClient, url: str, params: dict, *, label: str) -> httpx.Response:
+    """GET a Reddit feed, pacing requests globally and retrying the 403/429 rate-limit responses.
+
+    The pacing lock is held for the whole request so two concurrent callers (an hourly scrape and
+    a publish-time comment fetch) cannot interleave into a burst that trips the limiter.
+    """
+    global _last_request_at
+    async with _RATE_LIMIT_LOCK:
+        for attempt in range(3):
+            wait = _MIN_REQUEST_INTERVAL - (time.monotonic() - _last_request_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            response = await client.get(url, params=params, headers=_headers())
+            _last_request_at = time.monotonic()
+            # Reddit sends no Retry-After on these, and a transient 403 clears on the next slot,
+            # so just wait out another full interval instead of guessing a shorter backoff.
+            if response.status_code in (403, 429) and attempt < 2:
+                logger.info("Reddit %d on %s, retrying after %.0fs", response.status_code, label, _MIN_REQUEST_INTERVAL)
+                continue
+            response.raise_for_status()
+            return response
         return response
-    return response
 
 
 def _detect_post_type(content_url: str | None, domain: str = "") -> str:
@@ -59,24 +79,15 @@ def _detect_post_type(content_url: str | None, domain: str = "") -> str:
     return "link"
 
 
-def _abs_url(url: str | None) -> str | None:
-    if not url:
-        return None
-    if url.startswith("//"):
-        return "https:" + url
-    return url
-
-
 _INLINE_MD = {"strong": "**", "b": "**", "em": "*", "i": "*", "del": "~~", "s": "~~", "strike": "~~", "code": "`"}
 
 
 def _html_to_markdown(node: Tag) -> str:
-    """Turn an old.reddit rendered ``div.md`` subtree back into Reddit markdown.
+    """Turn a rendered ``div.md`` subtree back into Reddit markdown.
 
-    The listing/page only exposes the *rendered* HTML, but the Telegram publisher expects
-    markdown (that is how bodies arrived from the old JSON API). Reconstructing markdown keeps
-    paragraph breaks, links and emphasis so the existing markdown→Telegram pipeline formats
-    bodies exactly as it did before the switch to HTML scraping.
+    The feed carries only the *rendered* HTML, but the Telegram publisher expects markdown (that is
+    how bodies arrived from the old JSON API). Reconstructing markdown keeps paragraph breaks, links
+    and emphasis so the existing markdown→Telegram pipeline formats bodies as it always did.
     """
     out: list[str] = []
     for child in node.children:
@@ -120,200 +131,150 @@ def _selftext_from_md(md: Tag) -> str | None:
     return text or None
 
 
-def _parse_thing(thing) -> dict | None:
-    """Parse one old.reddit ``div.thing`` link element into a post dict."""
-    if thing.get("data-promoted") == "true":
+def _entry_text(entry: ET.Element, path: str) -> str:
+    return (entry.findtext(path, "", _ATOM) or "").strip()
+
+
+def _entry_author(entry: ET.Element) -> str:
+    """Author name without the ``/u/`` prefix the feed wraps it in."""
+    return _entry_text(entry, "a:author/a:name").removeprefix("/u/").strip()
+
+
+def _entry_permalink(entry: ET.Element) -> str:
+    link = entry.find("a:link", _ATOM)
+    href = (link.get("href") or "") if link is not None else ""
+    return href.strip()
+
+
+def _entry_created(entry: ET.Element) -> datetime:
+    stamp = _entry_text(entry, "a:published") or _entry_text(entry, "a:updated")
+    try:
+        return datetime.fromisoformat(stamp).astimezone(UTC)
+    except ValueError:
+        return datetime.now(UTC)
+
+
+def _content_soup(entry: ET.Element) -> BeautifulSoup:
+    """The entry's ``content`` payload — an HTML fragment — parsed for links, body and thumbnail.
+
+    The payload is escaped twice: the XML parser strips the outer layer, leaving HTML whose own
+    entities (``&lt;image&gt;`` placeholders, ``&amp;`` inside URLs) belong to the HTML parser.
+    Unescaping here as well would turn the ``<image>`` placeholder into a tag and lose it.
+    """
+    return BeautifulSoup(_entry_text(entry, "a:content"), "html.parser")
+
+
+def _linked_url(soup: BeautifulSoup, label: str) -> str | None:
+    """Read one of the feed's trailing ``[link]`` / ``[comments]`` anchors."""
+    for anchor in soup.find_all("a", href=True):
+        if anchor.get_text(strip=True) == label:
+            return html.unescape(anchor["href"])
+    return None
+
+
+def _thumbnail(entry: ET.Element, soup: BeautifulSoup) -> str | None:
+    """Preview image for the post — a ~320px signed render, the largest the feed exposes."""
+    media = entry.find("media:thumbnail", _ATOM)
+    if media is not None and (media.get("url") or "").startswith("http"):
+        return html.unescape(media.get("url"))
+    img = soup.find("img", src=True)
+    if img and img["src"].startswith("http"):
+        return html.unescape(img["src"])
+    return None
+
+
+def _parse_entry(entry: ET.Element, rank: int, total: int) -> dict | None:
+    """Parse one Atom ``entry`` from a listing feed into a post dict."""
+    reddit_id = _entry_text(entry, "a:id")
+    if not reddit_id.startswith("t3_"):
         return None
-    fullname = thing.get("data-fullname", "")
-    if not fullname.startswith("t3_"):
-        return None
-    author = thing.get("data-author") or "[deleted]"
-    if author == "[deleted]":
+    author = _entry_author(entry)
+    if not author or author == "[deleted]":
         return None
 
-    content_url = thing.get("data-url")
-    domain = thing.get("data-domain", "")
-    permalink = thing.get("data-permalink", "")
-    post_type = _detect_post_type(content_url, domain)
+    permalink = _entry_permalink(entry)
+    if not permalink:
+        return None
+    path = urlparse(permalink).path
 
-    title_tag = thing.select_one("a.title")
-    title = title_tag.get_text(strip=True) if title_tag else ""
+    soup = _content_soup(entry)
+    content_url = _linked_url(soup, "[link]") or permalink
+    # A self post's [link] anchor points back at the post itself; _detect_post_type keys off the
+    # old JSON API's "self.<subreddit>" domain convention, so reproduce it here.
+    category = entry.find("a:category", _ATOM)
+    subreddit = (category.get("label") or category.get("term") or "").removeprefix("r/") if category is not None else ""
+    is_self = urlparse(content_url).path == path
+    domain = f"self.{subreddit}" if is_self else urlparse(content_url).netloc
 
-    ts = thing.get("data-timestamp")
-    created = datetime.fromtimestamp(int(ts) / 1000, tz=UTC) if ts else datetime.now(UTC)
+    post_type = _detect_post_type(None if is_self else content_url, domain)
 
     video_url = hls_url = None
-    if post_type == "video" and content_url:
+    if post_type == "video":
         vid = content_url.rstrip("/").rsplit("/", 1)[-1]
         hls_url = f"https://v.redd.it/{vid}/HLSPlaylist.m3u8"
         video_url = f"https://v.redd.it/{vid}/DASH_720.mp4"
 
-    # Any post type can carry a text body (Reddit's "image/link + text" posts), so read it
-    # regardless of type. The listing often omits it — enrich_post refetches the page then.
-    selftext = None
-    md = thing.select_one("div.usertext-body div.md")
-    if md:
-        selftext = _selftext_from_md(md)
+    if post_type == "gallery":
+        # The feed exposes a gallery's cover thumbnail only — the tiles lived on the post page,
+        # which is no longer reachable. Publishing the cover plus the gallery link beats dropping
+        # the post, and that is exactly how a link post is already handled downstream.
+        post_type = "link"
 
-    preview_url = None
-    thumb = thing.select_one("a.thumbnail img")
-    if thumb:
-        src = _abs_url(thumb.get("src"))
-        if src and src.startswith("http"):
-            preview_url = src
-
+    md = soup.select_one("div.md")
     return {
-        "reddit_id": fullname,
-        "subreddit": thing.get("data-subreddit", ""),
-        "title": title,
+        "reddit_id": reddit_id,
+        "subreddit": subreddit,
+        "title": _entry_text(entry, "a:title"),
         "author": author,
-        "url": f"https://reddit.com{permalink}",
-        "content_url": content_url,
-        "selftext": selftext,
-        "score": int(thing.get("data-score") or 0),
-        "num_comments": int(thing.get("data-comments-count") or 0),
+        "url": f"https://reddit.com{path}",
+        "content_url": None if is_self else content_url,
+        "selftext": _selftext_from_md(md) if md else None,
+        # The feed carries no score. Posts arrive in Reddit's own top order, so rank stands in for
+        # it: the publisher's "highest score first" queue then preserves that order.
+        "score": max(total - rank, 1),
+        "num_comments": 0,  # not exposed by the feed
         "post_type": post_type,
-        "is_nsfw": thing.get("data-nsfw") == "true",
-        "media_urls": None,  # filled in for galleries via _fetch_gallery_images
-        "created_utc": created.isoformat(),
-        "preview_url": preview_url,
+        # Not exposed by the feed either. The logged-out r/all listing already excludes NSFW posts,
+        # so nothing NSFW reaches us to flag.
+        "is_nsfw": False,
+        "media_urls": None,
+        "created_utc": _entry_created(entry).isoformat(),
+        "preview_url": _thumbnail(entry, soup),
         "video_url": video_url,
         "hls_url": hls_url,
     }
 
 
-def _select_gallery_urls(page_html: str) -> list[str] | None:
-    """Pick the gallery's image URLs from a post page's HTML.
-
-    Each tile exposes the image at several widths via its link and thumbnail; preview.redd.it
-    needs its `s=` signature (unsigned variants 403), so keep the largest signed variant per image.
-    """
-    soup = BeautifulSoup(page_html, "html.parser")
-    order: list[str] = []
-    best: dict[str, tuple[int, str]] = {}
-    for el in soup.select(_GALLERY_TILE_SELECTOR):
-        raw = el.get("href") or el.get("src")
-        if not raw:
-            continue
-        url = html.unescape(raw)
-        if "preview.redd.it" in url and not re.search(r"[?&]s=", url):
-            continue
-        path = url.split("?", 1)[0]
-        width_match = re.search(r"[?&]width=(\d+)", url)
-        width = int(width_match.group(1)) if width_match else 0
-        if path not in best:
-            order.append(path)
-            best[path] = (width, url)
-        elif width > best[path][0]:
-            best[path] = (width, url)
-    return [best[path][1] for path in order][:20] or None
-
-
-async def _fetch_post_page(client: httpx.AsyncClient, post: dict) -> str | None:
-    """Fetch a post's own old.reddit page HTML (body, gallery tiles and og:image all live here)."""
-    permalink = post["url"].removeprefix("https://reddit.com")
+def _entries(xml: bytes) -> list[ET.Element]:
     try:
-        response = await _get_with_retry(client, f"{OLD_REDDIT}{permalink}", {}, label=f"page {post['reddit_id']}")
-    except Exception:
-        logger.warning("Failed to fetch post page for %s", post["reddit_id"])
-        return None
-    return response.text
-
-
-def _select_selftext(page_html: str, reddit_id: str) -> str | None:
-    """Extract a self-post's body from its own page, scoped to the post's ``thing``.
-
-    Scoping by ``data-fullname`` avoids pulling in comment bodies, which share the
-    ``div.usertext-body div.md`` markup.
-    """
-    soup = BeautifulSoup(page_html, "html.parser")
-    thing = soup.select_one(f"div.thing[data-fullname='{reddit_id}']")
-    if not thing:
-        return None
-    md = thing.select_one("div.expando div.usertext-body div.md") or thing.select_one("div.usertext-body div.md")
-    if not md:
-        return None
-    return _selftext_from_md(md)
-
-
-async def enrich_post(client: httpx.AsyncClient, post: dict) -> None:
-    """Fetch a new post's own page once to recover what the /top/ listing omits.
-
-    The listing does not reliably inline self-text (even for image/link posts that carry a body),
-    exposes only a tiny thumbnail for links, and never lists gallery tiles. Fetching the page once
-    fills all three. Called only for posts not yet in the DB, so a page is fetched at most once per
-    post instead of on every scrape.
-    """
-    needs_gallery = post["post_type"] == "gallery"
-    # Try the page's og:image for every link post: old.reddit sometimes omits the listing
-    # thumbnail even when the post has a large preview, so don't gate on preview_url being set.
-    needs_preview = post["post_type"] == "link"
-    needs_body = not post.get("selftext")
-    if not (needs_gallery or needs_preview or needs_body):
-        return
-
-    page = await _fetch_post_page(client, post)
-    if page is None:
-        return
-
-    if needs_body:
-        post["selftext"] = _select_selftext(page, post["reddit_id"])
-    if needs_gallery:
-        post["media_urls"] = _select_gallery_urls(page)
-    if needs_preview:
-        bigger = _select_preview_image(page)
-        if bigger:
-            post["preview_url"] = bigger
-
-
-def _select_preview_image(page_html: str) -> str | None:
-    """Pick a link post's large preview image from its page's ``og:image`` meta tag.
-
-    The listing only exposes a ~140px ``thumbs.redditmedia.com`` thumbnail, which Telegram
-    renders tiny. The post page's ``og:image`` is the full ``external-preview.redd.it`` render
-    (the same large image Reddit shows), so prefer it. The default Reddit snoo/icon served for
-    previewless posts lives on ``redditstatic.com`` and is rejected.
-    """
-    soup = BeautifulSoup(page_html, "html.parser")
-    meta = soup.select_one('meta[property="og:image"]')
-    if not meta:
-        return None
-    url = html.unescape((meta.get("content") or "").strip())
-    if not url.startswith("http") or "redditstatic.com" in url:
-        return None
-    return url
+        return ET.fromstring(xml).findall("a:entry", _ATOM)
+    except ET.ParseError:
+        logger.warning("Reddit returned unparseable XML")
+        return []
 
 
 async def fetch_top_posts(config: Config) -> list[dict]:
-    """Parse the /top/ listing into posts. Per-post page enrichment (body, gallery, preview)
-    happens later in enrich_post, only for posts new to the DB, to avoid refetching the whole
-    listing's pages on every scrape."""
-    url = f"{OLD_REDDIT}/top/"
+    """Fetch the day's top posts from the r/all Atom feed.
+
+    One request returns up to 100 entries carrying everything the publisher needs — body, media
+    link and preview — so unlike the old HTML scraper there is no per-post follow-up fetch.
+    """
+    url = f"{REDDIT}/r/all/top/.rss"
     params = {"t": "day", "limit": config.posts_limit}
 
     async with httpx.AsyncClient(timeout=30, follow_redirects=True, http2=True) as client:
-        response = await _get_with_retry(client, url, params, label="top posts")
+        response = await _rss_get(client, url, params, label="top posts")
 
-    soup = BeautifulSoup(response.text, "html.parser")
-    posts = [post for thing in soup.select("div.thing") if (post := _parse_thing(thing))]
+    entries = _entries(response.content)
+    posts = [post for i, e in enumerate(entries) if (post := _parse_entry(e, i, len(entries)))]
     logger.info("Fetched %d posts from Reddit", len(posts))
     return posts
-
-
-def _parse_comment_score(thing) -> int:
-    score_tag = thing.select_one("span.score.unvoted")
-    if score_tag and score_tag.get("title"):
-        try:
-            return int(score_tag["title"].split()[0])
-        except (ValueError, IndexError):
-            pass
-    return 0
 
 
 def _extract_comment_media(md_tag) -> tuple[str | None, str | None]:
     """Pull an image/gif URL out of a comment body's rendered HTML.
 
-    old.reddit renders a gif/emote as ``<img src=...>`` and a Reddit-uploaded image as
+    Reddit renders a gif/emote as ``<img src=...>`` and an uploaded image as
     ``<a href=...><image></a>``. ``.get_text()`` loses both, so read the URLs directly.
     """
     img = md_tag.find("img")
@@ -332,26 +293,28 @@ def _clean_comment_text(md_tag) -> str:
 
 
 async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list[dict]:
-    """Fetch top-level comments sorted by score from old.reddit HTML."""
+    """Fetch a post's comments from its own Atom feed.
+
+    The feed has no comment scores, so it is taken in feed order — Reddit sorts it the way the
+    post page does, and the first entries are the ones a reader sees at the top.
+    """
     permalink = post["url"].removeprefix("https://reddit.com")
-    url = f"{OLD_REDDIT}{permalink}"
+    url = f"{REDDIT}{permalink.rstrip('/')}/.rss"
     params = {"sort": "top", "limit": 50}
 
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True, http2=True) as client:
-            response = await _get_with_retry(client, url, params, label=f"comments {post['reddit_id']}")
+            response = await _rss_get(client, url, params, label=f"comments {post['reddit_id']}")
 
-        soup = BeautifulSoup(response.text, "html.parser")
         comments = []
-        # Direct children of the main comment listing = top-level comments only.
-        for thing in soup.select("div.commentarea > div.sitetable > div.comment"):
-            classes = thing.get("class", [])
-            if "stickied" in classes or "deleted" in classes:
+        for entry in _entries(response.content):
+            # The feed leads with the post itself (t3_); only t1_ entries are comments.
+            if not _entry_text(entry, "a:id").startswith("t1_"):
                 continue
-            author = thing.get("data-author")
+            author = _entry_author(entry)
             if not author or author == "[deleted]":
                 continue
-            body_tag = thing.select_one("div.entry div.usertext-body div.md")
+            body_tag = _content_soup(entry).select_one("div.md")
             if not body_tag:
                 continue
             media_url, media_type = _extract_comment_media(body_tag)
@@ -362,14 +325,14 @@ async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list
                 {
                     "author": author,
                     "body": body,
-                    "score": _parse_comment_score(thing),
+                    "score": 0,  # not exposed by the feed
                     "media_url": media_url,
                     "media_type": media_type,
                 }
             )
+            if len(comments) == limit:
+                break
 
-        comments.sort(key=lambda x: x["score"], reverse=True)
-        comments = comments[:limit]
         logger.info("Fetched %d top comments for %s", len(comments), post["reddit_id"])
         return comments
     except Exception:

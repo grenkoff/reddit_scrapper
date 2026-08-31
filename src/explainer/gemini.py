@@ -73,12 +73,13 @@ def _build_parts(post: dict, comments: list[dict] | None = None) -> list[dict]:
     ]
     if post.get("selftext"):
         lines.append(f"Текст: {post['selftext'][:2000]}")
-    lines.append(f"Оценка: {post['score']} upvotes, {post['num_comments']} комментариев")
+    # Reddit's feeds carry no vote or comment counts, so the prompt states no numbers rather than
+    # feeding the model the rank weight that stands in for `score` in the publish queue.
     if comments:
         lines.append("")
         lines.append("Топ комментарии (используй как контекст для понимания, не переводи):")
         for i, c in enumerate(comments, 1):
-            lines.append(f"{i}. u/{c['author']} ({c['score']} upvotes): {c['body'][:500]}")
+            lines.append(f"{i}. u/{c['author']}: {c['body'][:500]}")
     text_part = {"text": "\n".join(lines)}
 
     image_parts: list[dict] = []
