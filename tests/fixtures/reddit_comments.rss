@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+  <category term="funny" label="r/funny"/>
+  <id>/r/funny/comments/abc123/x/.rss</id>
+  <title>Comments on: x</title>
+
+  <entry>
+    <author><name>/u/op</name></author>
+    <category term="funny" label="r/funny"/>
+    <content type="html">&lt;table&gt; &lt;tr&gt;&lt;td&gt; &amp;#32; submitted by &amp;#32; &lt;a href="https://www.reddit.com/user/op"&gt; /u/op &lt;/a&gt; &lt;br/&gt; &lt;span&gt;&lt;a href="https://i.redd.it/x.jpeg"&gt;[link]&lt;/a&gt;&lt;/span&gt; &lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;</content>
+    <id>t3_abc123</id>
+    <link href="https://www.reddit.com/r/funny/comments/abc123/x/"/>
+    <updated>2026-08-30T10:00:00+00:00</updated>
+    <published>2026-08-30T10:00:00+00:00</published>
+    <title>x</title>
+  </entry>
+
+  <entry>
+    <author><name>/u/first</name></author>
+    <category term="funny" label="r/funny"/>
+    <content type="html">&lt;!-- SC_OFF --&gt;&lt;div class="md"&gt;&lt;p&gt;First comment here&lt;/p&gt; &lt;/div&gt;&lt;!-- SC_ON --&gt;</content>
+    <id>t1_c1</id>
+    <link href="https://www.reddit.com/r/funny/comments/abc123/x/c1/"/>
+    <updated>2026-08-30T10:05:00+00:00</updated>
+    <published>2026-08-30T10:05:00+00:00</published>
+    <title>/u/first on x</title>
+  </entry>
+
+  <entry>
+    <author><name>/u/second</name></author>
+    <category term="funny" label="r/funny"/>
+    <content type="html">&lt;!-- SC_OFF --&gt;&lt;div class="md"&gt;&lt;p&gt;Second comment here&lt;/p&gt; &lt;/div&gt;&lt;!-- SC_ON --&gt;</content>
+    <id>t1_c2</id>
+    <link href="https://www.reddit.com/r/funny/comments/abc123/x/c2/"/>
+    <updated>2026-08-30T10:06:00+00:00</updated>
+    <published>2026-08-30T10:06:00+00:00</published>
+    <title>/u/second on x</title>
+  </entry>
+
+  <entry>
+    <author><name>/u/[deleted]</name></author>
+    <category term="funny" label="r/funny"/>
+    <content type="html">&lt;!-- SC_OFF --&gt;&lt;div class="md"&gt;&lt;p&gt;[removed]&lt;/p&gt; &lt;/div&gt;&lt;!-- SC_ON --&gt;</content>
+    <id>t1_c3</id>
+    <link href="https://www.reddit.com/r/funny/comments/abc123/x/c3/"/>
+    <updated>2026-08-30T10:07:00+00:00</updated>
+    <published>2026-08-30T10:07:00+00:00</published>
+    <title>/u/[deleted] on x</title>
+  </entry>
+
+  <entry>
+    <author><name>/u/emptied</name></author>
+    <category term="funny" label="r/funny"/>
+    <content type="html">&lt;!-- SC_OFF --&gt;&lt;div class="md"&gt;&lt;p&gt;[removed]&lt;/p&gt; &lt;/div&gt;&lt;!-- SC_ON --&gt;</content>
+    <id>t1_c4</id>
+    <link href="https://www.reddit.com/r/funny/comments/abc123/x/c4/"/>
+    <updated>2026-08-30T10:08:00+00:00</updated>
+    <published>2026-08-30T10:08:00+00:00</published>
+    <title>/u/emptied on x</title>
+  </entry>
+
+  <entry>
+    <author><name>/u/gifposter</name></author>
+    <category term="funny" label="r/funny"/>
+    <content type="html">&lt;!-- SC_OFF --&gt;&lt;div class="md"&gt;&lt;p&gt;&lt;img src="https://i.redd.it/emote.gif" alt="emote" /&gt;&lt;/p&gt; &lt;/div&gt;&lt;!-- SC_ON --&gt;</content>
+    <id>t1_c5</id>
+    <link href="https://www.reddit.com/r/funny/comments/abc123/x/c5/"/>
+    <updated>2026-08-30T10:09:00+00:00</updated>
+    <published>2026-08-30T10:09:00+00:00</published>
+    <title>/u/gifposter on x</title>
+  </entry>
+
+  <entry>
+    <author><name>/u/imageposter</name></author>
+    <category term="funny" label="r/funny"/>
+    <content type="html">&lt;!-- SC_OFF --&gt;&lt;div class="md"&gt;&lt;p&gt;look at this &lt;a href="https://preview.redd.it/shot.png?s=sig"&gt;&amp;lt;image&amp;gt;&lt;/a&gt;&lt;/p&gt; &lt;/div&gt;&lt;!-- SC_ON --&gt;</content>
+    <id>t1_c6</id>
+    <link href="https://www.reddit.com/r/funny/comments/abc123/x/c6/"/>
+    <updated>2026-08-30T10:10:00+00:00</updated>
+    <published>2026-08-30T10:10:00+00:00</published>
+    <title>/u/imageposter on x</title>
+  </entry>
+</feed>

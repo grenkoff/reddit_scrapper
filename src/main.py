@@ -29,7 +29,7 @@ from src.scraper.media import (
     download_video,
     download_video_direct,
 )
-from src.scraper.reddit import enrich_post, fetch_fresh_hls_url, fetch_top_comments, fetch_top_posts
+from src.scraper.reddit import fetch_fresh_hls_url, fetch_top_comments, fetch_top_posts
 from src.webapp.server import start_webapp_task
 
 logging.basicConfig(
@@ -60,18 +60,15 @@ async def scrape_new_posts(config) -> None:
     try:
         posts = await fetch_top_posts(config)
         posts_found = len(posts)
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True, http2=True) as client:
-            for post in posts:
-                if config.skip_nsfw and post["is_nsfw"]:
-                    continue
-                if await is_post_exists(post["reddit_id"]):
-                    continue
-                # New post: fetch its page once to recover body/gallery/preview the listing omits.
-                # Space fetches out so old.reddit doesn't rate-limit the burst.
-                await asyncio.sleep(2)
-                await enrich_post(client, post)
-                await insert_post(post)
-                posts_new += 1
+        for post in posts:
+            if config.skip_nsfw and post["is_nsfw"]:
+                continue
+            if await is_post_exists(post["reddit_id"]):
+                continue
+            # The feed already carries body, media link and preview, so a new post needs no
+            # follow-up fetch — which is what keeps a scrape down to a single Reddit request.
+            await insert_post(post)
+            posts_new += 1
         logger.info("Scrape done: found=%d new=%d", posts_found, posts_new)
     except Exception as e:
         error = str(e)

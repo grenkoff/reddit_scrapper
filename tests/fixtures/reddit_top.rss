@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+  <category term="all" label="r/all"/>
+  <updated>2026-08-31T05:26:24+00:00</updated>
+  <id>/r/all/top/.rss?t=day</id>
+  <title>top scoring links : all</title>
+
+  <entry>
+    <author><name>/u/photographer</name></author>
+    <category term="pics" label="r/pics"/>
+    <content type="html">&lt;table&gt; &lt;tr&gt;&lt;td&gt; &lt;a href="https://www.reddit.com/r/pics/comments/img1/a_cat/"&gt; &lt;img src="https://preview.redd.it/abc.jpg?width=320&amp;amp;auto=webp&amp;amp;s=sig1" alt="A cat" title="A cat" /&gt; &lt;/a&gt; &lt;/td&gt;&lt;td&gt; &amp;#32; submitted by &amp;#32; &lt;a href="https://www.reddit.com/user/photographer"&gt; /u/photographer &lt;/a&gt; &lt;br/&gt; &lt;span&gt;&lt;a href="https://i.redd.it/abc.jpeg"&gt;[link]&lt;/a&gt;&lt;/span&gt; &amp;#32; &lt;span&gt;&lt;a href="https://www.reddit.com/r/pics/comments/img1/a_cat/"&gt;[comments]&lt;/a&gt;&lt;/span&gt; &lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;</content>
+    <id>t3_img1</id>
+    <media:thumbnail url="https://preview.redd.it/abc.jpg?width=320&amp;auto=webp&amp;s=sig1"/>
+    <link href="https://www.reddit.com/r/pics/comments/img1/a_cat/"/>
+    <updated>2026-08-30T13:30:26+00:00</updated>
+    <published>2026-08-30T13:30:26+00:00</published>
+    <title>A cat</title>
+  </entry>
+
+  <entry>
+    <author><name>/u/filmmaker</name></author>
+    <category term="videos" label="r/videos"/>
+    <content type="html">&lt;table&gt; &lt;tr&gt;&lt;td&gt; &lt;a href="https://www.reddit.com/r/videos/comments/vid1/a_clip/"&gt; &lt;img src="https://external-preview.redd.it/v.jpg?width=320&amp;amp;s=sig2" alt="A clip" /&gt; &lt;/a&gt; &lt;/td&gt;&lt;td&gt; &amp;#32; submitted by &amp;#32; &lt;a href="https://www.reddit.com/user/filmmaker"&gt; /u/filmmaker &lt;/a&gt; &lt;br/&gt; &lt;span&gt;&lt;a href="https://v.redd.it/vid123"&gt;[link]&lt;/a&gt;&lt;/span&gt; &amp;#32; &lt;span&gt;&lt;a href="https://www.reddit.com/r/videos/comments/vid1/a_clip/"&gt;[comments]&lt;/a&gt;&lt;/span&gt; &lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;</content>
+    <id>t3_vid1</id>
+    <media:thumbnail url="https://external-preview.redd.it/v.jpg?width=320&amp;s=sig2"/>
+    <link href="https://www.reddit.com/r/videos/comments/vid1/a_clip/"/>
+    <updated>2026-08-30T12:00:00+00:00</updated>
+    <published>2026-08-30T12:00:00+00:00</published>
+    <title>A clip</title>
+  </entry>
+
+  <entry>
+    <author><name>/u/storyteller</name></author>
+    <category term="tifu" label="r/tifu"/>
+    <content type="html">&lt;!-- SC_OFF --&gt;&lt;div class="md"&gt;&lt;p&gt;This is the body of the text post.&lt;/p&gt; &lt;/div&gt;&lt;!-- SC_ON --&gt; &amp;#32; submitted by &amp;#32; &lt;a href="https://www.reddit.com/user/storyteller"&gt; /u/storyteller &lt;/a&gt; &lt;br/&gt; &lt;span&gt;&lt;a href="https://www.reddit.com/r/tifu/comments/text1/a_story/"&gt;[link]&lt;/a&gt;&lt;/span&gt; &amp;#32; &lt;span&gt;&lt;a href="https://www.reddit.com/r/tifu/comments/text1/a_story/"&gt;[comments]&lt;/a&gt;&lt;/span&gt;</content>
+    <id>t3_text1</id>
+    <link href="https://www.reddit.com/r/tifu/comments/text1/a_story/"/>
+    <updated>2026-08-30T11:00:00+00:00</updated>
+    <published>2026-08-30T11:00:00+00:00</published>
+    <title>A story</title>
+  </entry>
+
+  <entry>
+    <author><name>/u/curator</name></author>
+    <category term="pics" label="r/pics"/>
+    <content type="html">&lt;table&gt; &lt;tr&gt;&lt;td&gt; &lt;a href="https://www.reddit.com/r/pics/comments/gal1/some_shots/"&gt; &lt;img src="https://preview.redd.it/g.jpg?width=320&amp;amp;s=sig3" alt="Some shots" /&gt; &lt;/a&gt; &lt;/td&gt;&lt;td&gt; &amp;#32; submitted by &amp;#32; &lt;a href="https://www.reddit.com/user/curator"&gt; /u/curator &lt;/a&gt; &lt;br/&gt; &lt;span&gt;&lt;a href="https://www.reddit.com/gallery/gal1"&gt;[link]&lt;/a&gt;&lt;/span&gt; &amp;#32; &lt;span&gt;&lt;a href="https://www.reddit.com/r/pics/comments/gal1/some_shots/"&gt;[comments]&lt;/a&gt;&lt;/span&gt; &lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;</content>
+    <id>t3_gal1</id>
+    <media:thumbnail url="https://preview.redd.it/g.jpg?width=320&amp;s=sig3"/>
+    <link href="https://www.reddit.com/r/pics/comments/gal1/some_shots/"/>
+    <updated>2026-08-30T10:00:00+00:00</updated>
+    <published>2026-08-30T10:00:00+00:00</published>
+    <title>Some shots</title>
+  </entry>
+
+  <entry>
+    <author><name>/u/reader</name></author>
+    <category term="news" label="r/news"/>
+    <content type="html">&lt;table&gt; &lt;tr&gt;&lt;td&gt; &lt;a href="https://www.reddit.com/r/news/comments/lnk1/headline/"&gt; &lt;img src="https://external-preview.redd.it/n.jpg?width=320&amp;amp;s=sig4" alt="Headline" /&gt; &lt;/a&gt; &lt;/td&gt;&lt;td&gt; &amp;#32; submitted by &amp;#32; &lt;a href="https://www.reddit.com/user/reader"&gt; /u/reader &lt;/a&gt; &lt;br/&gt; &lt;span&gt;&lt;a href="https://example.com/article"&gt;[link]&lt;/a&gt;&lt;/span&gt; &amp;#32; &lt;span&gt;&lt;a href="https://www.reddit.com/r/news/comments/lnk1/headline/"&gt;[comments]&lt;/a&gt;&lt;/span&gt; &lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;</content>
+    <id>t3_lnk1</id>
+    <media:thumbnail url="https://external-preview.redd.it/n.jpg?width=320&amp;s=sig4"/>
+    <link href="https://www.reddit.com/r/news/comments/lnk1/headline/"/>
+    <updated>2026-08-30T09:00:00+00:00</updated>
+    <published>2026-08-30T09:00:00+00:00</published>
+    <title>Headline</title>
+  </entry>
+
+  <entry>
+    <author><name>/u/[deleted]</name></author>
+    <category term="pics" label="r/pics"/>
+    <content type="html">&lt;span&gt;&lt;a href="https://i.redd.it/del.jpeg"&gt;[link]&lt;/a&gt;&lt;/span&gt;</content>
+    <id>t3_del1</id>
+    <link href="https://www.reddit.com/r/pics/comments/del1/gone/"/>
+    <updated>2026-08-30T08:00:00+00:00</updated>
+    <published>2026-08-30T08:00:00+00:00</published>
+    <title>Gone</title>
+  </entry>
+</feed>

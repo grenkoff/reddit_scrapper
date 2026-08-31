@@ -6,7 +6,7 @@ Automatically scrapes top posts from Reddit and publishes them to a Telegram cha
 
 ## Features
 
-- Fetches top posts from Reddit every 20 minutes via public JSON API
+- Fetches top posts from Reddit via the public Atom feeds (`www.reddit.com/.rss`)
 - Supports all media types: images, galleries, videos, text posts, links
 - Deduplication — same post is never published twice
 - NSFW filtering
