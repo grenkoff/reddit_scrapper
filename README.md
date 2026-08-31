@@ -11,7 +11,7 @@ Automatically scrapes top posts from Reddit and publishes them to a Telegram cha
 - Deduplication — same post is never published twice
 - NSFW filtering
 - Automatic retry on network errors
-- Runs in Docker, auto-deploys on push to `main`
+- Runs in Docker on your own machine, reachable publicly through a Tailscale Funnel
 
 ## Quick Start
 
@@ -67,7 +67,7 @@ pytest
 
 ### Branching
 
-- `main` — production, auto-deploys on merge
+- `main` — production, deployed by pulling and restarting the compose stack
 - `feature/*` — feature branches, merged into `main` via PR
 - `fix/*` — bug fixes, merged into `main` via PR
 

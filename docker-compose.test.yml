@@ -1,0 +1,6 @@
+# Test contour: the same stack pointed at the test bot and test channel from .env.local.
+# Start it without the tunnel, which only the live deployment needs:
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml up -d bot
+services:
+  bot:
+    env_file: .env.local
