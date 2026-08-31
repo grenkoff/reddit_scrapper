@@ -29,7 +29,7 @@ from src.scraper.media import (
     download_video,
     download_video_direct,
 )
-from src.scraper.reddit import fetch_fresh_hls_url, fetch_top_comments, fetch_top_posts
+from src.scraper.reddit import fetch_fresh_hls_url, fetch_gallery_images, fetch_top_comments, fetch_top_posts
 from src.webapp.server import start_webapp_task
 
 logging.basicConfig(
@@ -65,8 +65,16 @@ async def scrape_new_posts(config) -> None:
                 continue
             if await is_post_exists(post["reddit_id"]):
                 continue
-            # The feed already carries body, media link and preview, so a new post needs no
-            # follow-up fetch — which is what keeps a scrape down to a single Reddit request.
+            # The feed already carries body, media link and preview, so most posts need no
+            # follow-up fetch — which is what keeps a scrape to a single request against the feeds.
+            if post["post_type"] == "gallery":
+                # A gallery is the exception: the feed lists only its cover, so the tiles are read
+                # off the embed host, which has its own, much looser request budget.
+                post["media_urls"] = await fetch_gallery_images(post)
+                if not post["media_urls"]:
+                    # Nothing to build an album from — fall back to publishing the cover plus the
+                    # gallery link, which is how a link post is already handled downstream.
+                    post["post_type"] = "link"
             await insert_post(post)
             posts_new += 1
         logger.info("Scrape done: found=%d new=%d", posts_found, posts_new)
