@@ -105,7 +105,7 @@ async def test_parse_video_derives_hls_and_fallback(posts):
     post = posts["t3_vid1"]
     assert post["post_type"] == "video"
     assert post["hls_url"] == "https://v.redd.it/vid123/HLSPlaylist.m3u8"
-    assert post["video_url"] == "https://v.redd.it/vid123/DASH_720.mp4"
+    assert post["video_url"] == "https://v.redd.it/vid123/DASHPlaylist.mpd"
 
 
 async def test_parse_link_post_keeps_external_url_and_preview(posts):
