@@ -1,8 +1,10 @@
 import asyncio
 import logging
+import os
 import re
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import httpx
@@ -96,20 +98,66 @@ def _get_ffmpeg() -> str | None:
     return shutil.which("ffmpeg")
 
 
+# yt-dlp wants a *directory* holding a binary named exactly "ffmpeg", while imageio-ffmpeg ships a
+# versioned filename, so the binary is linked under that name. The link lives in the process's own
+# temp dir rather than TMP_DIR on purpose: TMP_DIR is bind-mounted from the host, so a link created
+# by a bot run on the host pointed into the host's .venv and dangled inside the container — which
+# silently switched off every Reddit video download for weeks.
+_FFMPEG_LINK_DIR = Path(tempfile.gettempdir()) / "reddit-scrapper-ffmpeg"
+
+
 def _ffmpeg_dir_for_ytdlp() -> str | None:
     """Return a directory containing a symlink named 'ffmpeg' for yt-dlp."""
     real_bin = _get_ffmpeg()
     if not real_bin:
+        logger.warning("ffmpeg not found — Reddit videos will fall back to a silent stream")
         return None
+    link = _FFMPEG_LINK_DIR / "ffmpeg"
     try:
-        symlink_dir = TMP_DIR / ".bin"
-        symlink_dir.mkdir(parents=True, exist_ok=True)
-        symlink = symlink_dir / "ffmpeg"
-        if not symlink.exists():
-            symlink.symlink_to(real_bin)
-        return str(symlink_dir)
-    except Exception:
+        _FFMPEG_LINK_DIR.mkdir(parents=True, exist_ok=True)
+        # is_symlink(), not exists(): exists() follows the link, so a dangling one reads as absent
+        # and recreating it then fails with FileExistsError.
+        if link.is_symlink() and os.readlink(link) != real_bin:
+            link.unlink()
+        if not link.is_symlink():
+            link.symlink_to(real_bin)
+        return str(_FFMPEG_LINK_DIR)
+    except OSError:
+        logger.warning(
+            "Could not link ffmpeg for yt-dlp — Reddit videos will fall back to a silent stream", exc_info=True
+        )
         return None
+
+
+_DASH_NS = "{urn:mpeg:dash:schema:mpd:2011}"
+
+
+async def _best_dash_video_url(client: httpx.AsyncClient, video_url: str) -> str:
+    """Resolve a v.redd.it video to its tallest real video stream via the DASH manifest.
+
+    Stream filenames can't be guessed: Reddit renamed ``DASH_720.mp4`` to ``CMAF_480.mp4`` and
+    friends, and each video carries its own set of heights (many top out below 720p). The manifest
+    at ``https://v.redd.it/<id>/DASHPlaylist.mpd`` lists what actually exists.
+    """
+    base = video_url.split("?", 1)[0].rstrip("/")
+    if base.endswith((".mpd", ".mp4", ".m3u8")):
+        base = base.rsplit("/", 1)[0]
+    response = await client.get(f"{base}/DASHPlaylist.mpd", headers={"User-Agent": BROWSER_UA})
+    response.raise_for_status()
+
+    best_height, best_name = -1, None
+    for adaptation in ET.fromstring(response.content).iter(f"{_DASH_NS}AdaptationSet"):
+        for rep in adaptation.iter(f"{_DASH_NS}Representation"):
+            mime = rep.get("mimeType") or adaptation.get("mimeType") or ""
+            if adaptation.get("contentType") != "video" and not mime.startswith("video/"):
+                continue
+            name = rep.findtext(f"{_DASH_NS}BaseURL")
+            height = int(rep.get("height") or 0)
+            if name and height > best_height:
+                best_height, best_name = height, name.strip()
+    if not best_name:
+        raise ValueError(f"no video stream in DASH manifest for {base}")
+    return f"{base}/{best_name}"
 
 
 async def download_video_direct(url: str, hls_url: str | None = None) -> Path | None:
@@ -147,7 +195,9 @@ async def download_video_direct(url: str, hls_url: str | None = None) -> Path | 
     try:
         TMP_DIR.mkdir(exist_ok=True)  # noqa: ASYNC240
         async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-            video_resp = await client.get(url)
+            if "v.redd.it" in url:
+                url = await _best_dash_video_url(client, url)
+            video_resp = await client.get(url, headers={"User-Agent": BROWSER_UA})
             video_resp.raise_for_status()
             video_bytes = video_resp.content
 

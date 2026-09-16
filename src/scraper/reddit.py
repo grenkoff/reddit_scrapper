@@ -244,7 +244,9 @@ def _parse_entry(entry: ET.Element, rank: int, total: int) -> dict | None:
     if post_type == "video":
         vid = content_url.rstrip("/").rsplit("/", 1)[-1]
         hls_url = f"https://v.redd.it/{vid}/HLSPlaylist.m3u8"
-        video_url = f"https://v.redd.it/{vid}/DASH_720.mp4"
+        # The silent fallback stream. Its filename is not guessable (Reddit renamed DASH_720.mp4 to
+        # CMAF_<height>.mp4, and heights vary per video), so point at the manifest that lists them.
+        video_url = f"https://v.redd.it/{vid}/DASHPlaylist.mpd"
 
     md = soup.select_one("div.md")
     return {

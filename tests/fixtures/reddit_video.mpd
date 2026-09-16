@@ -1,0 +1,20 @@
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1M3S" minBufferTime="PT4S" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011" type="static">
+  <Period duration="PT1M3S">
+    <AdaptationSet contentType="video" segmentAlignment="true" subsegmentAlignment="true">
+      <Representation bandwidth="242606" codecs="avc1.4d401e" frameRate="30" height="360" id="3" mimeType="video/mp4" width="480">
+        <BaseURL>CMAF_360.mp4</BaseURL>
+      </Representation>
+      <Representation bandwidth="801812" codecs="avc1.4d401f" frameRate="30" height="720" id="5" mimeType="video/mp4" width="960">
+        <BaseURL>CMAF_720.mp4</BaseURL>
+      </Representation>
+      <Representation bandwidth="401812" codecs="avc1.4d401f" frameRate="30" height="480" id="4" mimeType="video/mp4" width="640">
+        <BaseURL>CMAF_480.mp4</BaseURL>
+      </Representation>
+    </AdaptationSet>
+    <AdaptationSet contentType="audio" segmentAlignment="true" subsegmentAlignment="true">
+      <Representation audioSamplingRate="48000" bandwidth="130429" codecs="mp4a.40.2" id="7" mimeType="audio/mp4">
+        <BaseURL>CMAF_AUDIO_128.mp4</BaseURL>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>

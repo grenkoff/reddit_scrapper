@@ -76,34 +76,100 @@ def test_cleanup_silently_ignores_missing_file():
 # --- download_video_direct (unit) ---
 
 
-async def test_download_video_direct_skips_hls_when_no_ffmpeg():
-    with (
-        patch("src.scraper.media._ffmpeg_dir_for_ytdlp", return_value=None),
-        patch("httpx.AsyncClient") as mock_client_cls,
-    ):
-        mock_client = MagicMock()
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.content = b"fake_video_bytes"
-        mock_resp.raise_for_status = MagicMock()
-        mock_client.__aenter__ = lambda s: s
-        mock_client.__aexit__ = MagicMock(return_value=False)
+MPD = Path("tests/fixtures/reddit_video.mpd").read_bytes()
+MPD_URL = "https://v.redd.it/abc/DASHPlaylist.mpd"
 
-        async def fake_get(url, **kwargs):
-            return mock_resp
 
-        mock_client.get = fake_get
-        mock_client_cls.return_value = mock_client
-
+@respx.mock
+async def test_download_video_direct_fallback_resolves_stream_from_manifest():
+    """Stream names can't be guessed (Reddit renamed DASH_720.mp4 to CMAF_*), so read the manifest."""
+    respx.get(MPD_URL).mock(return_value=Response(200, content=MPD))
+    stream = respx.get("https://v.redd.it/abc/CMAF_720.mp4").mock(return_value=Response(200, content=b"video"))
+    with patch("src.scraper.media._ffmpeg_dir_for_ytdlp", return_value=None):
         from src.scraper.media import download_video_direct
 
-        result = await download_video_direct(
-            "https://v.redd.it/abc/DASH_720.mp4",
-            hls_url="https://v.redd.it/abc/HLSPlaylist.m3u8?a=token",
-        )
-    # With no ffmpeg, falls back to direct download
-    if result:
-        cleanup(result)
+        # A legacy stored URL still resolves: only the v.redd.it id is taken from it.
+        result = await download_video_direct("https://v.redd.it/abc/DASH_720.mp4")
+    assert stream.called
+    assert result is not None and result.read_bytes() == b"video"
+    cleanup(result)
+
+
+@respx.mock
+async def test_download_video_direct_none_when_manifest_missing():
+    respx.get(MPD_URL).mock(return_value=Response(403))
+    with patch("src.scraper.media._ffmpeg_dir_for_ytdlp", return_value=None):
+        from src.scraper.media import download_video_direct
+
+        assert await download_video_direct("https://v.redd.it/abc/DASHPlaylist.mpd") is None
+
+
+# --- _best_dash_video_url ---
+
+
+@respx.mock
+async def test_best_dash_video_url_picks_tallest_video_not_audio():
+    import httpx
+
+    from src.scraper.media import _best_dash_video_url
+
+    respx.get(MPD_URL).mock(return_value=Response(200, content=MPD))
+    async with httpx.AsyncClient() as client:
+        assert await _best_dash_video_url(client, MPD_URL) == "https://v.redd.it/abc/CMAF_720.mp4"
+
+
+@respx.mock
+async def test_best_dash_video_url_raises_without_video_stream():
+    import httpx
+    import pytest
+
+    from src.scraper.media import _best_dash_video_url
+
+    audio_only = MPD.replace(b'contentType="video"', b'contentType="text"').replace(b'mimeType="video/mp4"', b"")
+    respx.get(MPD_URL).mock(return_value=Response(200, content=audio_only))
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(ValueError):
+            await _best_dash_video_url(client, MPD_URL)
+
+
+# --- _ffmpeg_dir_for_ytdlp ---
+
+
+def test_ffmpeg_dir_replaces_dangling_link(tmp_path, monkeypatch):
+    """A link left by a host run points at a path the container lacks; it must be replaced, not trusted."""
+    import src.scraper.media as media
+
+    real = tmp_path / "ffmpeg-real"
+    real.write_text("")
+    link_dir = tmp_path / "links"
+    link_dir.mkdir()
+    (link_dir / "ffmpeg").symlink_to("/nonexistent/host/.venv/ffmpeg")
+    monkeypatch.setattr(media, "_FFMPEG_LINK_DIR", link_dir)
+    monkeypatch.setattr(media, "_get_ffmpeg", lambda: str(real))
+
+    assert media._ffmpeg_dir_for_ytdlp() == str(link_dir)
+    assert (link_dir / "ffmpeg").resolve() == real
+
+
+def test_ffmpeg_dir_keeps_correct_link(tmp_path, monkeypatch):
+    import src.scraper.media as media
+
+    real = tmp_path / "ffmpeg-real"
+    real.write_text("")
+    link_dir = tmp_path / "links"
+    monkeypatch.setattr(media, "_FFMPEG_LINK_DIR", link_dir)
+    monkeypatch.setattr(media, "_get_ffmpeg", lambda: str(real))
+
+    assert media._ffmpeg_dir_for_ytdlp() == str(link_dir)
+    assert media._ffmpeg_dir_for_ytdlp() == str(link_dir)  # second call reuses the link
+    assert (link_dir / "ffmpeg").resolve() == real
+
+
+def test_ffmpeg_dir_none_without_ffmpeg(monkeypatch):
+    import src.scraper.media as media
+
+    monkeypatch.setattr(media, "_get_ffmpeg", lambda: None)
+    assert media._ffmpeg_dir_for_ytdlp() is None
 
 
 # --- download_image ---
