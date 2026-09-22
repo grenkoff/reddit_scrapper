@@ -123,6 +123,12 @@ async def get_unpublished_posts(limit: int | None = None, max_age_hours: int = 2
     return posts
 
 
+async def get_last_published_at() -> datetime | None:
+    """When the most recent post went out, or None if nothing has been published yet."""
+    async with _pool.acquire() as conn:
+        return await conn.fetchval("SELECT MAX(published_at) FROM posts")
+
+
 async def mark_as_unpublished(reddit_id: str) -> None:
     async with _pool.acquire() as conn:
         await conn.execute(

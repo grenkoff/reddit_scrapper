@@ -12,6 +12,7 @@ from src.config import load_config
 from src.db import (
     close_db,
     delete_stale_posts,
+    get_last_published_at,
     get_unpublished_posts,
     init_db,
     insert_post,
@@ -237,6 +238,31 @@ async def _fetch_bot_username(token: str) -> str | None:
     return None
 
 
+async def _last_publish_monotonic(config) -> float:
+    """``time.monotonic()`` value the last published post corresponds to.
+
+    Returns ``-inf`` when nothing has been published yet, or when the last post is already older
+    than one interval, so publishing starts immediately in both cases.
+    """
+    try:
+        published_at = await get_last_published_at()
+    except Exception:
+        logger.warning("Could not read the last publish time — publishing right away", exc_info=True)
+        return float("-inf")
+    if published_at is None:
+        return float("-inf")
+
+    age = (datetime.now(UTC) - published_at).total_seconds()
+    if age >= config.pause_between_posts:
+        return float("-inf")
+    logger.info(
+        "Last post published %.0fs ago — next publish in %.0fs",
+        age,
+        config.pause_between_posts - age,
+    )
+    return time.monotonic() - age
+
+
 async def main() -> None:
     config = load_config()
     await init_db(config.database_url)
@@ -266,6 +292,10 @@ async def main() -> None:
     )
 
     last_scrape: float = float("-inf")
+    # Seed the publishing rhythm from the channel's own history so a restart does not reset it:
+    # coming back a minute after a post went out must wait out the rest of the interval, not fire
+    # another post straight away.
+    last_publish = await _last_publish_monotonic(config)
 
     while not stop_event.is_set():
         now = time.monotonic()
@@ -278,6 +308,14 @@ async def main() -> None:
                 logger.info("Deleted %d stale unpublished posts (>%dh)", deleted, _STALE_POST_AGE_HOURS)
             last_scrape = time.monotonic()
 
+        # Hold off until the interval since the last published post has elapsed. Scraping above
+        # still runs on its own schedule while we wait.
+        due_in = config.pause_between_posts - (time.monotonic() - last_publish)
+        if due_in > 0:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop_event.wait(), timeout=due_in)
+            continue
+
         # Publish one post (with timeout to prevent hanging on media download)
         result = None
         try:
@@ -289,11 +327,10 @@ async def main() -> None:
                 logger.warning("Skipping post %s due to timeout", posts[0]["reddit_id"])
                 await mark_as_published(posts[0]["reddit_id"], 0)
 
-        # Wait only after a successful publish or when the queue is empty.
-        # After a skip (result is False) go straight to the next post.
+        # Start the interval anew after a publish, or when the queue was empty. A skip
+        # (result is False) leaves it untouched so the next post is tried immediately.
         if result is not False:
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(stop_event.wait(), timeout=config.pause_between_posts)
+            last_publish = time.monotonic()
 
     logger.info("Bot stopped")
     await close_db()
