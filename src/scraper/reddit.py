@@ -374,6 +374,32 @@ def _clean_comment_text(md_tag) -> str:
     return md_tag.get_text("\n", strip=True).replace("<image>", "").strip()
 
 
+# Reddit pins a moderator announcement to the top of a post's comments, and the feed puts it first
+# with nothing to mark it as stickied or distinguished — the old HTML scraper filtered it by its
+# ``stickied`` class, which the feeds do not expose. So it is recognised by who wrote it and by the
+# announcement boilerplate. Sampled 2026-09-23: three of six posts led with one of these.
+_MOD_AUTHORS = {"automoderator"}
+_MOD_AUTHOR_SUFFIXES = ("-modteam", "_modteam", "modteam")
+_MOD_ANNOUNCEMENT_MARKERS = (
+    "i am a bot",  # the standard bot footer, e.g. r/Fauxmoi's trendingtattler
+    "this action was performed automatically",
+    "contact the moderators of this subreddit",
+    "please read before commenting",  # r/popculturechat's flairassistant, which has no bot footer
+    "your post has been removed",
+    "your submission has been removed",
+    "your comment has been removed",
+)
+
+
+def _is_mod_announcement(author: str, body: str) -> bool:
+    """Whether a comment is a pinned moderator/bot notice rather than a reader's comment."""
+    name = author.lower()
+    if name in _MOD_AUTHORS or name.endswith(_MOD_AUTHOR_SUFFIXES):
+        return True
+    text = body.lower()
+    return any(marker in text for marker in _MOD_ANNOUNCEMENT_MARKERS)
+
+
 async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list[dict]:
     """Fetch a post's comments from its own Atom feed.
 
@@ -402,6 +428,9 @@ async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list
             media_url, media_type = _extract_comment_media(body_tag)
             body = _clean_comment_text(body_tag)
             if not media_url and body in ("", "[removed]", "[deleted]"):
+                continue
+            if _is_mod_announcement(author, body):
+                logger.info("Skipping mod announcement by u/%s on %s", author, post["reddit_id"])
                 continue
             comments.append(
                 {
