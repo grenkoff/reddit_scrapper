@@ -7,6 +7,7 @@ from httpx import Response
 
 from src.config import Config
 from src.scraper.reddit import (
+    _is_mod_announcement,
     _selftext_from_md,
     fetch_fresh_hls_url,
     fetch_top_comments,
@@ -63,6 +64,12 @@ async def test_fetch_top_comments_parses_in_feed_order(comments):
     # The feed exposes no comment scores, so its own order is what ranks them.
     assert [c["author"] for c in comments][:2] == ["first", "second"]
     assert comments[0]["body"] == "First comment here"
+
+
+async def test_fetch_top_comments_skips_pinned_mod_announcement(comments):
+    """Reddit pins a mod notice above the real comments and the feed gives it no marker."""
+    assert "AutoModerator" not in [c["author"] for c in comments]
+    assert comments[0]["author"] == "first"  # the readers' top comment still leads
 
 
 async def test_fetch_top_comments_skips_the_post_entry(comments):
@@ -141,3 +148,37 @@ def test_md_plain_text_without_tags():
 async def test_fetch_fresh_hls_url_returns_none():
     # HLS is now a static derived path, so there is nothing to refresh.
     assert await fetch_fresh_hls_url(CONFIG, "t3_abc123") is None
+
+
+# --- _is_mod_announcement (bodies below are real notices sampled from Reddit on 2026-09-23) ---
+
+
+def test_mod_announcement_detects_bot_footer():
+    body = (
+        "This post has hit r/all or r/popular. Please keep this in mind when browsing the comments. "
+        "I am a bot, and this action was performed automatically. "
+        "Please contact the moderators of this subreddit if you have any questions or concerns."
+    )
+    assert _is_mod_announcement("trendingtattler", body) is True
+
+
+def test_mod_announcement_detects_notice_without_bot_footer():
+    body = (
+        "\U0001f4cc PLEASE READ BEFORE COMMENTING This post is flaired Guest List Only. "
+        "This means the conversation is being strictly moderated."
+    )
+    assert _is_mod_announcement("flairassistant", body) is True
+
+
+def test_mod_announcement_detects_modteam_author():
+    body = 'Unfortunately, your post has been removed because it violates our "No screens" rule.'
+    assert _is_mod_announcement("mildlyinteresting-ModTeam", body) is True
+
+
+def test_mod_announcement_detects_automoderator_whatever_the_body():
+    assert _is_mod_announcement("AutoModerator", "Your submission is now live.") is True
+
+
+def test_mod_announcement_leaves_ordinary_comments_alone():
+    assert _is_mod_announcement("lightningandblunder", "Look at that, shit can actually get done.") is False
+    assert _is_mod_announcement("some_user", "the mods here are strict but fair") is False
