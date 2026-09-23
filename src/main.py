@@ -112,11 +112,13 @@ async def _publish_comments_delayed(config, poller: "UpdatePoller", post: dict, 
             if not discussion_chat_id:
                 return
 
-        comments = await fetch_top_comments(config, post)
+        # Decide how many to publish before fetching: resolving each top-level comment costs a
+        # request, so asking for five and dropping four would pay for comments nobody sees.
+        wanted = random.randint(1, 5)
+        comments = await fetch_top_comments(config, post, limit=wanted, top_level_only=True)
         if not comments:
             return
-        count = min(random.randint(1, 5), len(comments))
-        comments = comments[:count]
+        count = len(comments)
 
         # One request covers the whole batch; a comment whose translation is missing goes out
         # with the original alone rather than waiting on a retry.
