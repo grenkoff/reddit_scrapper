@@ -20,6 +20,7 @@ from src.db import (
     log_scrape,
     mark_as_published,
 )
+from src.explainer.gemini import translate_comments
 from src.publisher.poller import UpdatePoller
 from src.publisher.telegram import publish_comment, publish_failed_notice, publish_post
 from src.scraper.media import (
@@ -116,6 +117,11 @@ async def _publish_comments_delayed(config, poller: "UpdatePoller", post: dict, 
             return
         count = min(random.randint(1, 5), len(comments))
         comments = comments[:count]
+
+        # One request covers the whole batch; a comment whose translation is missing goes out
+        # with the original alone rather than waiting on a retry.
+        for comment, translation in zip(comments, await translate_comments(config, post, comments), strict=True):
+            comment["translation"] = translation
 
         delays = sorted(random.uniform(0, 600) for _ in range(count))
         elapsed = 0.0

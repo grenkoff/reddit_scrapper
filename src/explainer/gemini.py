@@ -120,6 +120,78 @@ async def _safe_fetch_comments(config: Config, post: dict) -> list[dict]:
         return []
 
 
+_TRANSLATE_PROMPT = (
+    "Ты переводишь комментарии с Reddit на русский язык для Telegram-канала.\n"
+    "Тебе дают заголовок поста как контекст и список комментариев.\n"
+    "Переведи каждый комментарий, сохраняя тон: шутка должна остаться шуткой, "
+    "сарказм — сарказмом, грубость — грубостью, не смягчай.\n"
+    "Отсылки к играм, фильмам и мемам не переводи буквально — передавай смысл; "
+    "имена, никнеймы и названия оставляй как есть.\n"
+    "Ответь ТОЛЬКО JSON-массивом строк той же длины и в том же порядке, без пояснений."
+)
+
+_MODEL_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"
+
+
+async def translate_comments(config: Config, post: dict, comments: list[dict]) -> list[str | None]:
+    """Translate comment bodies into Russian, one request for the whole batch.
+
+    Returns a list aligned with ``comments``; an entry is None when there is nothing to translate
+    or the model's answer could not be used, and the caller then publishes the original alone.
+    """
+    if not config.gemini_api_key:
+        return [None] * len(comments)
+    indexed = [(i, c["body"]) for i, c in enumerate(comments) if c.get("body")]
+    if not indexed:
+        return [None] * len(comments)
+
+    payload = {
+        "system_instruction": {"parts": [{"text": _TRANSLATE_PROMPT}]},
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "text": json.dumps(
+                            {"post_title": post.get("title", ""), "comments": [b for _, b in indexed]},
+                            ensure_ascii=False,
+                        )
+                    }
+                ],
+            }
+        ],
+        "generationConfig": {
+            "maxOutputTokens": 2048,
+            "temperature": 0.3,
+            "responseMimeType": "application/json",
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
+    }
+
+    translations: list[str | None] = [None] * len(comments)
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(f"{_MODEL_URL}?key={config.gemini_api_key}", json=payload)
+        if response.status_code != 200:
+            logger.warning("Gemini HTTP %s on comment translation: %s", response.status_code, response.text[:200])
+            return translations
+        text = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+        parsed = json.loads(text)
+        if not isinstance(parsed, list) or len(parsed) != len(indexed):
+            # A mismatched list cannot be aligned with the comments, and guessing would caption a
+            # comment with someone else's translation.
+            logger.warning("Gemini returned %s translations for %d comments", type(parsed).__name__, len(indexed))
+            return translations
+    except Exception:
+        logger.warning("Comment translation failed for %s", post.get("reddit_id"), exc_info=True)
+        return translations
+
+    for (position, _), translated in zip(indexed, parsed, strict=True):
+        if isinstance(translated, str) and translated.strip():
+            translations[position] = translated.strip()
+    return translations
+
+
 async def generate_explanation(config: Config, post: dict) -> str:
     comments = await _safe_fetch_comments(config, post)
     system_prompt = await _get_system_prompt()

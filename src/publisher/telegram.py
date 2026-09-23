@@ -654,9 +654,16 @@ def _format_comment(comment: dict, body_override: str | None = None) -> str:
     body = body_override if body_override is not None else comment["body"]
     header = f"\U0001f4ac <b>u/{_html.escape(comment['author'])}</b>"
     body_html = _md_to_telegram_html(body) if body else ""
-    if body_html:
-        return f"{header}\n\n{body_html}"
-    return header
+    if not body_html:
+        return header
+    # The translation sits under a spoiler so the original reads first and whoever wants the
+    # Russian taps to reveal it. Telegram nests no markup inside tg-spoiler reliably, so the
+    # translated text goes in escaped rather than run through the markdown converter.
+    translation = (comment.get("translation") or "").strip()
+    if translation:
+        spoiler = f"<tg-spoiler>{_html.escape(translation)}</tg-spoiler>"
+        return f"{header}\n\n{body_html}\n\n{spoiler}"
+    return f"{header}\n\n{body_html}"
 
 
 async def publish_comment(
