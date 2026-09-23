@@ -400,11 +400,85 @@ def _is_mod_announcement(author: str, body: str) -> bool:
     return any(marker in text for marker in _MOD_ANNOUNCEMENT_MARKERS)
 
 
-async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list[dict]:
+async def _subtree_ids(client: httpx.AsyncClient, post: dict, comment_id: str) -> set[str]:
+    """Ids of a comment and every reply nested under it.
+
+    A comment's own feed is its subtree, which is what makes the walk in ``fetch_top_comments``
+    possible: the post's feed flattens the whole thread depth-first with nothing marking depth.
+    """
+    permalink = post["url"].removeprefix("https://reddit.com").rstrip("/")
+    url = f"{REDDIT}{permalink}/{comment_id.removeprefix('t1_')}/.rss"
+    response = await _rss_get(client, url, {}, label=f"subtree {comment_id}")
+    return {_entry_text(entry, "a:id") for entry in _entries(response.content)}
+
+
+def _parse_comment(entry: ET.Element) -> dict | None:
+    """One comment entry, or None when it is not worth publishing."""
+    author = _entry_author(entry)
+    if not author or author == "[deleted]":
+        return None
+    body_tag = _content_soup(entry).select_one("div.md")
+    if not body_tag:
+        return None
+    media_url, media_type = _extract_comment_media(body_tag)
+    body = _clean_comment_text(body_tag)
+    if not media_url and body in ("", "[removed]", "[deleted]"):
+        return None
+    if _is_mod_announcement(author, body):
+        logger.info("Skipping mod announcement by u/%s", author)
+        return None
+    return {
+        "author": author,
+        "body": body,
+        "score": 0,  # not exposed by the feed
+        "media_url": media_url,
+        "media_type": media_type,
+    }
+
+
+async def _collect_comments(
+    client: httpx.AsyncClient,
+    post: dict,
+    entries: list[ET.Element],
+    limit: int,
+    top_level_only: bool,
+) -> list[dict]:
+    comments: list[dict] = []
+    replies: set[str] = set()
+    for position, entry in enumerate(entries):
+        comment_id = _entry_text(entry, "a:id")
+        if comment_id in replies:
+            continue
+        parsed = _parse_comment(entry)
+        if parsed:
+            comments.append(parsed)
+            if len(comments) == limit:
+                break
+        if not top_level_only or position + 1 >= len(entries):
+            continue
+        try:
+            # Walk past this root comment's replies — including the replies of one that was
+            # filtered out, since those are not top-level either.
+            replies |= await _subtree_ids(client, post, comment_id)
+        except Exception:
+            # Without the subtree the remaining entries cannot be told apart, and publishing a
+            # reply as if it were a top-level comment is worse than publishing fewer comments.
+            logger.warning("Could not resolve replies under %s — stopping early", comment_id, exc_info=True)
+            break
+    return comments
+
+
+async def fetch_top_comments(config: Config, post: dict, limit: int = 5, *, top_level_only: bool = False) -> list[dict]:
     """Fetch a post's comments from its own Atom feed.
 
     The feed has no comment scores, so it is taken in feed order — Reddit sorts it the way the
     post page does, and the first entries are the ones a reader sees at the top.
+
+    With ``top_level_only`` the replies are dropped. The feed gives no way to tell a reply from a
+    root comment — no depth, no parent, and ``depth=1`` is ignored — so each root comment's subtree
+    is fetched and its ids skipped, which makes the next surviving entry the next root comment.
+    That costs one extra request per root comment walked, so it is off by default: the explanation
+    prompt just needs context quickly, while the discussion group needs the real top-level replies.
     """
     permalink = post["url"].removeprefix("https://reddit.com")
     url = f"{REDDIT}{permalink.rstrip('/')}/.rss"
@@ -413,36 +487,10 @@ async def fetch_top_comments(config: Config, post: dict, limit: int = 5) -> list
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True, http2=True) as client:
             response = await _rss_get(client, url, params, label=f"comments {post['reddit_id']}")
-
-        comments = []
-        for entry in _entries(response.content):
             # The feed leads with the post itself (t3_); only t1_ entries are comments.
-            if not _entry_text(entry, "a:id").startswith("t1_"):
-                continue
-            author = _entry_author(entry)
-            if not author or author == "[deleted]":
-                continue
-            body_tag = _content_soup(entry).select_one("div.md")
-            if not body_tag:
-                continue
-            media_url, media_type = _extract_comment_media(body_tag)
-            body = _clean_comment_text(body_tag)
-            if not media_url and body in ("", "[removed]", "[deleted]"):
-                continue
-            if _is_mod_announcement(author, body):
-                logger.info("Skipping mod announcement by u/%s on %s", author, post["reddit_id"])
-                continue
-            comments.append(
-                {
-                    "author": author,
-                    "body": body,
-                    "score": 0,  # not exposed by the feed
-                    "media_url": media_url,
-                    "media_type": media_type,
-                }
-            )
-            if len(comments) == limit:
-                break
+            entries = [e for e in _entries(response.content) if _entry_text(e, "a:id").startswith("t1_")]
+            # Resolving replies reuses this client, so it has to happen before the block exits.
+            comments = await _collect_comments(client, post, entries, limit, top_level_only)
 
         logger.info("Fetched %d top comments for %s", len(comments), post["reddit_id"])
         return comments

@@ -182,3 +182,68 @@ def test_mod_announcement_detects_automoderator_whatever_the_body():
 def test_mod_announcement_leaves_ordinary_comments_alone():
     assert _is_mod_announcement("lightningandblunder", "Look at that, shit can actually get done.") is False
     assert _is_mod_announcement("some_user", "the mods here are strict but fair") is False
+
+
+# --- top_level_only: replies must not reach the discussion group ---
+
+SUBTREE = "https://www.reddit.com/r/funny/comments/abc123/x/{}/.rss"
+
+
+def _feed(ids: list[str]) -> bytes:
+    entries = "".join(f"<entry><id>{i}</id></entry>" for i in ids)
+    return f'<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">{entries}</feed>'.encode()
+
+
+@respx.mock
+async def test_top_level_only_skips_replies():
+    """The feed flattens the thread, so each root comment's subtree marks which ids are replies."""
+    respx.get(COMMENTS_URL).mock(return_value=Response(200, content=COMMENTS_RSS))
+    respx.get(SUBTREE.format("sticky")).mock(return_value=Response(200, content=_feed(["t1_sticky"])))
+    # u/second wrote a reply to u/first rather than a comment of its own.
+    respx.get(SUBTREE.format("c1")).mock(return_value=Response(200, content=_feed(["t1_c1", "t1_c2"])))
+    for cid in ("c3", "c4"):
+        respx.get(SUBTREE.format(cid)).mock(return_value=Response(200, content=_feed([f"t1_{cid}"])))
+
+    comments = await fetch_top_comments(CONFIG, SAMPLE_POST, limit=2, top_level_only=True)
+
+    assert [c["author"] for c in comments] == ["first", "gifposter"]
+    assert "second" not in [c["author"] for c in comments]
+
+
+@respx.mock
+async def test_flat_fetch_costs_a_single_request():
+    """The explanation prompt only needs context, so it must not pay for subtree lookups."""
+    route = respx.get(COMMENTS_URL).mock(return_value=Response(200, content=COMMENTS_RSS))
+    subtree = respx.get(SUBTREE.format("c1")).mock(return_value=Response(200, content=_feed(["t1_c1"])))
+
+    comments = await fetch_top_comments(CONFIG, SAMPLE_POST, limit=2)
+
+    assert [c["author"] for c in comments] == ["first", "second"]
+    assert route.call_count == 1
+    assert not subtree.called
+
+
+@respx.mock
+async def test_unresolvable_subtree_stops_instead_of_guessing():
+    """Publishing a reply as a top-level comment is worse than publishing fewer comments."""
+    respx.get(COMMENTS_URL).mock(return_value=Response(200, content=COMMENTS_RSS))
+    respx.get(SUBTREE.format("sticky")).mock(return_value=Response(200, content=_feed(["t1_sticky"])))
+    respx.get(SUBTREE.format("c1")).mock(return_value=Response(500))
+
+    comments = await fetch_top_comments(CONFIG, SAMPLE_POST, limit=5, top_level_only=True)
+
+    assert [c["author"] for c in comments] == ["first"]
+
+
+@respx.mock
+async def test_replies_under_a_filtered_comment_are_skipped_too():
+    """A mod notice is not published, but its replies are still replies."""
+    respx.get(COMMENTS_URL).mock(return_value=Response(200, content=COMMENTS_RSS))
+    # Everything below the pinned notice belongs to its thread.
+    respx.get(SUBTREE.format("sticky")).mock(return_value=Response(200, content=_feed(["t1_sticky", "t1_c1", "t1_c2"])))
+    respx.get(SUBTREE.format("c3")).mock(return_value=Response(200, content=_feed(["t1_c3"])))
+    respx.get(SUBTREE.format("c4")).mock(return_value=Response(200, content=_feed(["t1_c4"])))
+
+    comments = await fetch_top_comments(CONFIG, SAMPLE_POST, limit=1, top_level_only=True)
+
+    assert [c["author"] for c in comments] == ["gifposter"]
