@@ -130,7 +130,37 @@ _TRANSLATE_PROMPT = (
     "Ответь ТОЛЬКО JSON-массивом строк той же длины и в том же порядке, без пояснений."
 )
 
-_MODEL_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"
+# Google takes a model offline for hours at a time: on 2026-09-24 gemini-3.1-flash-lite answered
+# every request with 503 "This model is currently experiencing high demand" from 07:32 onwards, and
+# both the explanations and the comment translations went with it. So each call walks a chain and
+# settles on the first model that answers, ending with an older one that tends to stay available.
+# Every fallback is one that answered 200 to this module's own payloads on 2026-09-24. The "lite"
+# aliases are deliberately absent: gemini-flash-lite-latest and gemini-3.5-flash-lite reject the
+# request outright (400), so falling back to them would only turn an outage into a hard error.
+_MODEL_CHAIN = ("gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash")
+_RETRIABLE_STATUSES = (429, 500, 502, 503, 504)
+
+
+def _model_url(model: str, endpoint: str, api_key: str, *, sse: bool = False) -> str:
+    query = f"?alt=sse&key={api_key}" if sse else f"?key={api_key}"
+    return f"https://generativelanguage.googleapis.com/v1beta/models/{model}:{endpoint}{query}"
+
+
+async def _post_to_first_available(client: httpx.AsyncClient, api_key: str, payload: dict) -> httpx.Response | None:
+    """POST to each model in turn, returning the first non-overloaded answer."""
+    response = None
+    for model in _MODEL_CHAIN:
+        response = await client.post(_model_url(model, "generateContent", api_key), json=payload)
+        if response.status_code == 200:
+            if model != _MODEL_CHAIN[0]:
+                logger.info("Gemini fell back to %s", model)
+            return response
+        if response.status_code not in _RETRIABLE_STATUSES:
+            break
+        logger.info("Gemini %s on %s, trying the next model", response.status_code, model)
+    if response is not None:
+        logger.warning("Gemini HTTP %s: %s", response.status_code, response.text[:200])
+    return None
 
 
 async def translate_comments(config: Config, post: dict, comments: list[dict]) -> list[str | None]:
@@ -171,9 +201,8 @@ async def translate_comments(config: Config, post: dict, comments: list[dict]) -
     translations: list[str | None] = [None] * len(comments)
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(f"{_MODEL_URL}?key={config.gemini_api_key}", json=payload)
-        if response.status_code != 200:
-            logger.warning("Gemini HTTP %s on comment translation: %s", response.status_code, response.text[:200])
+            response = await _post_to_first_available(client, config.gemini_api_key, payload)
+        if response is None:
             return translations
         text = response.json()["candidates"][0]["content"]["parts"][0]["text"]
         parsed = json.loads(text)
@@ -195,15 +224,12 @@ async def translate_comments(config: Config, post: dict, comments: list[dict]) -
 async def generate_explanation(config: Config, post: dict) -> str:
     comments = await _safe_fetch_comments(config, post)
     system_prompt = await _get_system_prompt()
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-3.1-flash-lite:generateContent?key={config.gemini_api_key}"
-    )
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(url, json=_build_payload(post, system_prompt, comments))
-        if response.status_code != 200:
-            logger.warning("Gemini HTTP %s: %s", response.status_code, response.text)
-            response.raise_for_status()
+        response = await _post_to_first_available(
+            client, config.gemini_api_key, _build_payload(post, system_prompt, comments)
+        )
+    if response is None:
+        return "Не удалось сгенерировать объяснение."
 
     data = response.json()
     try:
@@ -219,27 +245,30 @@ async def stream_explanation(config: Config, post: dict, skip_image_text: bool =
     system_prompt = await _get_system_prompt()
     if skip_image_text:
         system_prompt = _strip_section_4(system_prompt)
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-3.1-flash-lite:streamGenerateContent?alt=sse&key={config.gemini_api_key}"
-    )
-    async with (
-        httpx.AsyncClient(timeout=60) as client,
-        client.stream("POST", url, json=_build_payload(post, system_prompt, comments)) as response,
-    ):
-        if response.status_code != 200:
-            body = await response.aread()
-            logger.warning("Gemini HTTP %s: %s", response.status_code, body.decode())
-            response.raise_for_status()
+    payload = _build_payload(post, system_prompt, comments)
+    async with httpx.AsyncClient(timeout=60) as client:
+        for position, model in enumerate(_MODEL_CHAIN):
+            url = _model_url(model, "streamGenerateContent", config.gemini_api_key, sse=True)
+            async with client.stream("POST", url, json=payload) as response:
+                if response.status_code != 200:
+                    body = await response.aread()
+                    if response.status_code in _RETRIABLE_STATUSES and position + 1 < len(_MODEL_CHAIN):
+                        logger.info("Gemini %s on %s, trying the next model", response.status_code, model)
+                        continue
+                    logger.warning("Gemini HTTP %s: %s", response.status_code, body.decode()[:200])
+                    response.raise_for_status()
+                if position:
+                    logger.info("Gemini fell back to %s", model)
 
-        async for line in response.aiter_lines():
-            if not line.startswith("data: "):
-                continue
-            payload = line[6:]
-            try:
-                data = json.loads(payload)
-                text = data["candidates"][0]["content"]["parts"][0]["text"]
-            except (json.JSONDecodeError, KeyError, IndexError):
-                continue
-            if text:
-                yield text
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    chunk = line[6:]
+                    try:
+                        data = json.loads(chunk)
+                        text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
+                    if text:
+                        yield text
+            return
