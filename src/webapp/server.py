@@ -342,7 +342,9 @@ def create_app(config: Config) -> FastAPI:
 
 async def run_webapp(config: Config) -> None:
     app = create_app(config)
-    server_config = uvicorn.Config(app, host="0.0.0.0", port=config.webapp_port, log_level="info")
+    # log_config=None leaves logging to us: uvicorn's own handlers would bypass the root handler
+    # and with it the filter that keeps the admin pages' ?secret= out of the access log.
+    server_config = uvicorn.Config(app, host="0.0.0.0", port=config.webapp_port, log_level="info", log_config=None)
     server = uvicorn.Server(server_config)
     await server.serve()
 
