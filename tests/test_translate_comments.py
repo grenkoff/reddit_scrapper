@@ -96,3 +96,40 @@ def test_translation_is_hidden_behind_a_spoiler():
 def test_translation_is_escaped_inside_the_spoiler():
     text = _format_comment({"author": "u", "body": "x", "translation": "<b>жирный</b> & прочее"})
     assert "<tg-spoiler>&lt;b&gt;жирный&lt;/b&gt; &amp; прочее</tg-spoiler>" in text
+
+
+# --- model fallback (Google takes a model offline for hours; see _MODEL_CHAIN) ---
+
+OVERLOADED = Response(503, json={"error": {"code": 503, "message": "This model is experiencing high demand."}})
+
+
+def _model_url(model: str) -> str:
+    return f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+
+@respx.mock
+async def test_translation_falls_back_to_an_available_model():
+    first = respx.post(_model_url("gemini-3.1-flash-lite")).mock(return_value=OVERLOADED)
+    second = respx.post(_model_url("gemini-3.5-flash")).mock(return_value=OVERLOADED)
+    third = respx.post(_model_url("gemini-2.5-flash")).mock(return_value=_gemini_says(["Перевод"]))
+
+    assert await translate_comments(CONFIG, POST, [{"body": "Something"}]) == ["Перевод"]
+    assert first.called and second.called and third.called
+
+
+@respx.mock
+async def test_translation_gives_up_when_every_model_is_overloaded():
+    for model in ("gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash"):
+        respx.post(_model_url(model)).mock(return_value=OVERLOADED)
+
+    assert await translate_comments(CONFIG, POST, [{"body": "Something"}]) == [None]
+
+
+@respx.mock
+async def test_a_rejected_request_is_not_retried_on_other_models():
+    """A 400 means the request itself is wrong, so trying more models would just waste calls."""
+    first = respx.post(_model_url("gemini-3.1-flash-lite")).mock(return_value=Response(400, json={"error": "bad"}))
+    second = respx.post(_model_url("gemini-3.5-flash")).mock(return_value=_gemini_says(["Перевод"]))
+
+    assert await translate_comments(CONFIG, POST, [{"body": "Something"}]) == [None]
+    assert first.called and not second.called
