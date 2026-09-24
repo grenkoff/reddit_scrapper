@@ -21,6 +21,7 @@ from src.db import (
     mark_as_published,
 )
 from src.explainer.gemini import translate_comments
+from src.log_redaction import install_secret_redaction
 from src.publisher.poller import UpdatePoller
 from src.publisher.telegram import publish_comment, publish_failed_notice, publish_post
 from src.scraper.media import (
@@ -38,6 +39,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+install_secret_redaction()
 logger = logging.getLogger(__name__)
 
 _VIDEO_DOMAINS = {"youtube.com", "youtu.be", "vimeo.com", "twitter.com", "x.com", "tiktok.com", "streamable.com"}
