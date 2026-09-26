@@ -1,11 +1,12 @@
 import json
+from urllib.parse import unquote_plus
 
 import respx
 from httpx import Response
 
 from src.config import Config
 from src.explainer.gemini import translate_comments
-from src.publisher.telegram import _format_comment
+from src.publisher.telegram import _format_comment, publish_comment
 
 CONFIG = Config(
     telegram_bot_token="t",
@@ -133,3 +134,41 @@ async def test_a_rejected_request_is_not_retried_on_other_models():
 
     assert await translate_comments(CONFIG, POST, [{"body": "Something"}]) == [None]
     assert first.called and not second.called
+
+
+# --- publishing a comment whose only content is media ---
+
+TG = "https://api.telegram.org/bot{}/{}"
+
+
+@respx.mock
+async def test_media_only_comment_falls_back_to_its_link():
+    """A failed photo send must not leave a header with nothing under it."""
+    respx.post(TG.format("t", "sendPhoto")).mock(return_value=Response(400, json={"ok": False}))
+    text = respx.post(TG.format("t", "sendMessage")).mock(
+        return_value=Response(200, json={"ok": True, "result": {"message_id": 7}})
+    )
+
+    comment = {"author": "u", "body": "", "media_url": "https://i.redd.it/x.jpg", "media_type": "image"}
+    assert await publish_comment(CONFIG, comment, -100, 1) == 7
+    assert "https://i.redd.it/x.jpg" in unquote_plus(text.calls.last.request.content.decode())
+
+
+@respx.mock
+async def test_media_comment_sends_the_photo_with_its_text_as_caption():
+    photo = respx.post(TG.format("t", "sendPhoto")).mock(
+        return_value=Response(200, json={"ok": True, "result": {"message_id": 8}})
+    )
+
+    comment = {
+        "author": "Stromiy",
+        "body": "You will feel the wrath of flatulence",
+        "media_url": "https://preview.redd.it/t7y.jpeg?s=abc",
+        "media_type": "image",
+        "translation": "Ты познаешь всю ярость метеоризма",
+    }
+    assert await publish_comment(CONFIG, comment, -100, 1) == 8
+    sent = unquote_plus(photo.calls.last.request.content.decode())
+    # The URL travels in the photo field, never in the caption the reader sees.
+    assert "wrath of flatulence" in sent
+    assert "tg-spoiler" in sent

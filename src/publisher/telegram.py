@@ -730,7 +730,11 @@ async def publish_comment(
 
         # Fallback to text if no media or media send failed
         if not msg_id:
-            text = _format_comment(comment) if media_url else caption
+            text = caption
+            if media_url and not clean_body:
+                # The comment was nothing but the media, so a bare header would say nothing:
+                # fall back to the link itself.
+                text = f"{text}\n\n{media_url}"
             msg_id, _ = await _post_message(
                 client,
                 config,

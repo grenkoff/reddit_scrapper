@@ -353,19 +353,55 @@ async def fetch_top_posts(config: Config) -> list[dict]:
     return posts
 
 
+# Hosts whose links are the media itself rather than a page about it.
+_COMMENT_MEDIA_HOSTS = ("i.redd.it", "preview.redd.it", "external-preview.redd.it", "i.imgur.com")
+_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
+# A giphy *page* answers 403 to anything without a browser session, but the file behind it does not.
+# The id is the last dash-separated token of the slug ("funny-cat-XQtLwTp17" -> "XQtLwTp17").
+_GIPHY_PAGE = re.compile(r"^https?://(?:www\.)?giphy\.com/gifs/(?:[\w-]*-)?([A-Za-z0-9]+)")
+
+
+def _media_from_href(href: str) -> tuple[str | None, str | None]:
+    """A sendable media URL and its kind for a link, or (None, None) for an ordinary link."""
+    giphy = _GIPHY_PAGE.match(href)
+    if giphy:
+        return f"https://media.giphy.com/media/{giphy.group(1)}/giphy.gif", "gif"
+    path = href.split("?", 1)[0].lower()
+    if path.endswith(".gif"):
+        return href, "gif"
+    if any(host in href for host in _COMMENT_MEDIA_HOSTS) or path.endswith(_IMAGE_SUFFIXES):
+        return href, "image"
+    return None, None
+
+
 def _extract_comment_media(md_tag) -> tuple[str | None, str | None]:
     """Pull an image/gif URL out of a comment body's rendered HTML.
 
-    Reddit renders a gif/emote as ``<img src=...>`` and an uploaded image as
-    ``<a href=...><image></a>``. ``.get_text()`` loses both, so read the URLs directly.
+    Three shapes appear: a gif/emote as ``<img src=...>``, an uploaded image as
+    ``<a href=...><image></a>``, and — the one the feeds use — a bare link whose text *is* the URL.
+    ``.get_text()`` loses the first two and leaves the third sitting in the message as a raw link,
+    which is how preview.redd.it URLs ended up printed under comments.
+
+    The matched node is removed from the tree, so the URL does not also survive as text. A link
+    with words for its text keeps them: the sentence is worth more than the duplicate URL.
     """
     img = md_tag.find("img")
     if img and img.get("src"):
-        return html.unescape(img["src"]), "gif"
+        url = html.unescape(img["src"])
+        img.decompose()
+        return url, "gif"
     for anchor in md_tag.find_all("a", href=True):
-        if anchor.get_text(strip=True) == "<image>":
-            href = html.unescape(anchor["href"])
+        href = html.unescape(anchor["href"])
+        text = anchor.get_text(strip=True)
+        if text == "<image>":
+            anchor.decompose()
             return href, ("gif" if ".gif" in href.lower() else "image")
+        url, kind = _media_from_href(href)
+        if not url:
+            continue
+        if text.rstrip("/") == href.rstrip("/"):
+            anchor.decompose()
+        return url, kind
     return None, None
 
 
