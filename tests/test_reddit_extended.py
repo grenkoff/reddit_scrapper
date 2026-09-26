@@ -7,6 +7,8 @@ from httpx import Response
 
 from src.config import Config
 from src.scraper.reddit import (
+    _clean_comment_text,
+    _extract_comment_media,
     _is_mod_announcement,
     _selftext_from_md,
     fetch_fresh_hls_url,
@@ -247,3 +249,56 @@ async def test_replies_under_a_filtered_comment_are_skipped_too():
     comments = await fetch_top_comments(CONFIG, SAMPLE_POST, limit=1, top_level_only=True)
 
     assert [c["author"] for c in comments] == ["gifposter"]
+
+
+# --- comment media (the feeds render a bare link as its own URL, not as <image>) ---
+
+
+def _md_tag(inner: str):
+    return BeautifulSoup(f'<div class="md">{inner}</div>', "html.parser").select_one("div.md")
+
+
+def test_reddit_image_link_becomes_media_and_leaves_the_text():
+    """Real shape from the feed: the anchor text is the URL, which used to be printed as text."""
+    md = _md_tag(
+        "<p>You will feel the wrath of flatulence</p>"
+        '<p><a href="https://preview.redd.it/t7y.jpeg?width=271&amp;s=abc">'
+        "https://preview.redd.it/t7y.jpeg?width=271&amp;s=abc</a></p>"
+    )
+    assert _extract_comment_media(md) == ("https://preview.redd.it/t7y.jpeg?width=271&s=abc", "image")
+    assert _clean_comment_text(md) == "You will feel the wrath of flatulence"
+
+
+def test_giphy_page_link_becomes_a_direct_gif():
+    """The giphy page 403s for bots; the file behind it does not."""
+    md = _md_tag('<p><a href="https://giphy.com/gifs/XQtLwTp17">https://giphy.com/gifs/XQtLwTp17</a></p>')
+    assert _extract_comment_media(md) == ("https://media.giphy.com/media/XQtLwTp17/giphy.gif", "gif")
+    assert _clean_comment_text(md) == ""  # nothing left to say, and nothing left to translate
+
+
+def test_giphy_slug_keeps_only_the_id():
+    md = _md_tag('<p><a href="https://giphy.com/gifs/cat-funny-AbC123">https://giphy.com/gifs/cat-funny-AbC123</a></p>')
+    assert _extract_comment_media(md)[0] == "https://media.giphy.com/media/AbC123/giphy.gif"
+
+
+def test_link_with_words_keeps_its_text():
+    md = _md_tag('<p>see <a href="https://i.redd.it/x.jpg">this photo</a> now</p>')
+    assert _extract_comment_media(md) == ("https://i.redd.it/x.jpg", "image")
+    assert "this photo" in _clean_comment_text(md)  # the sentence is worth more than the URL
+
+
+def test_ordinary_link_is_not_media():
+    md = _md_tag('<p>source: <a href="https://nytimes.com/article">https://nytimes.com/article</a></p>')
+    assert _extract_comment_media(md) == (None, None)
+    assert "nytimes.com/article" in _clean_comment_text(md)
+
+
+def test_legacy_image_placeholder_still_works():
+    md = _md_tag('<p>nice <a href="https://preview.redd.it/y.png?s=1">&lt;image&gt;</a></p>')
+    assert _extract_comment_media(md) == ("https://preview.redd.it/y.png?s=1", "image")
+    assert _clean_comment_text(md) == "nice"
+
+
+def test_emote_img_still_works():
+    md = _md_tag('<p><img src="https://i.redd.it/emote.gif"/></p>')
+    assert _extract_comment_media(md) == ("https://i.redd.it/emote.gif", "gif")
