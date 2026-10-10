@@ -1,0 +1,12 @@
+# Terminates TLS for the Mini App behind each post's AI-explanation link. The hostname comes from
+# .env; 46-62-193-217.sslip.io resolves to this server by itself, so Let's Encrypt can validate it
+# without owning a domain.
+{$PUBLIC_HOST} {
+	encode zstd gzip
+
+	# The explanation arrives as server-sent events, so the response must not be buffered —
+	# otherwise the reader waits for the whole answer instead of watching it appear.
+	reverse_proxy bot:8080 {
+		flush_interval -1
+	}
+}
