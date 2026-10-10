@@ -152,3 +152,28 @@ async def test_explain_stream_does_not_cache_truncated_response():
         async with await _client() as c:
             await c.get("/api/explain/stream?reddit_id=t3_abc")
     mock_save.assert_not_awaited()
+
+
+# --- favicon ---
+
+
+async def test_favicon_svg_is_served():
+    async with await _client() as client:
+        response = await client.get("/favicon.svg")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/svg+xml")
+    assert response.text.startswith("<svg")
+
+
+async def test_bare_favicon_ico_redirects_to_the_svg():
+    """Browsers request /favicon.ico on their own, without reading the page's <link>."""
+    async with await _client() as client:
+        response = await client.get("/favicon.ico")
+    assert response.status_code == 301
+    assert response.headers["location"] == "/favicon.svg"
+
+
+async def test_page_links_the_icon():
+    async with await _client() as client:
+        response = await client.get("/")
+    assert '<link rel="icon" href="/favicon.svg"' in response.text
