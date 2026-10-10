@@ -5,7 +5,7 @@ import logging
 import httpx
 import uvicorn
 from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from src.config import Config
 from src.db import (
@@ -30,6 +30,7 @@ _MINI_APP_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI-explanation</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   body {
@@ -183,12 +184,33 @@ _MINI_APP_HTML = """<!DOCTYPE html>
 """
 
 
+# A speech bubble with a spark: the page explains a Reddit post, and the shape stays readable at
+# the 16px a browser tab gives it. SVG rather than a binary .ico so it lives in the source as text.
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+    '<rect width="64" height="64" rx="14" fill="#ff4500"/>'
+    '<path d="M14 20a6 6 0 0 1 6-6h24a6 6 0 0 1 6 6v16a6 6 0 0 1-6 6H30l-10 8v-8a6 6 0 0 1-6-6z" fill="#fff"/>'
+    '<path d="M32 20l2.6 6.4L41 29l-6.4 2.6L32 38l-2.6-6.4L23 29l6.4-2.6z" fill="#ff4500"/>'
+    "</svg>"
+)
+
+
 def create_app(config: Config) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None)
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> str:
         return _MINI_APP_HTML
+
+    @app.get("/favicon.svg")
+    async def favicon_svg() -> Response:
+        return Response(_FAVICON_SVG, media_type="image/svg+xml", headers={"Cache-Control": "max-age=86400"})
+
+    @app.get("/favicon.ico")
+    async def favicon_ico() -> Response:
+        # Browsers ask for this path on their own, without reading the page's <link>. Redirecting
+        # keeps one icon in one place instead of shipping a second, binary copy.
+        return RedirectResponse("/favicon.svg", status_code=301)
 
     @app.get("/health")
     async def health() -> dict:
