@@ -11,7 +11,7 @@ Automatically scrapes top posts from Reddit and publishes them to a Telegram cha
 - Deduplication — same post is never published twice
 - NSFW filtering
 - Automatic retry on network errors
-- Runs in Docker on your own machine, reachable publicly through a Tailscale Funnel
+- Runs in Docker on your own server, with HTTPS from Caddy and Let's Encrypt
 
 ## Quick Start
 

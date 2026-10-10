@@ -25,11 +25,32 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # Loopback only: on the server the web app is reached through Caddy, which terminates TLS.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./tmp:/app/tmp
       - ./src:/app/src
 
+  # Only started with `docker compose --profile server up -d`, so a laptop or the test contour
+  # never races for ports 80/443 or asks Let's Encrypt for a certificate it cannot get.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    profiles: ["server"]
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - bot
+
 volumes:
   postgres_data:
+  caddy_data:
+  caddy_config:
