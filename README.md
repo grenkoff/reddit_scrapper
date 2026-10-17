@@ -51,6 +51,8 @@ Copy `.env.example` to `.env` and fill in the values:
 | `POSTS_LIMIT` | Max posts per request | `50` |
 | `SKIP_NSFW` | Skip NSFW posts | `true` |
 | `PAUSE_BETWEEN_POSTS` | Seconds between Telegram messages | `3.0` |
+| `POSTGRES_PASSWORD` | Postgres password for docker compose, same as in `DATABASE_URL` | required |
+| `DATABASE_URL` | Postgres connection string | required |
 
 ## Development
 

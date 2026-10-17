@@ -5,11 +5,9 @@ services:
     environment:
       POSTGRES_DB: reddit_scrapper
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    # 5432 on this host belongs to another project's database, so expose the port one over.
-    # The bot reaches Postgres over the compose network and ignores this mapping.
-    ports:
-      - "5434:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    # No published port: the bot reaches Postgres over the compose network. An exposed 5434 with
+    # the default password got the database wiped and a miner planted, so keep it unreachable.
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
