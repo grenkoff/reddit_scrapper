@@ -79,6 +79,7 @@ Telegram Mini App, который открывает веб-приложение
 | `POSTS_LIMIT` | Максимум постов за запрос | `50` |
 | `SKIP_NSFW` | Пропускать NSFW посты | `true` |
 | `PAUSE_BETWEEN_POSTS` | Секунды между сообщениями в Telegram | `3.0` |
+| `POSTGRES_PASSWORD` | Пароль Postgres в docker compose, тот же, что в `DATABASE_URL` | обязательно |
 | `DATABASE_URL` | Строка подключения к Postgres | обязательно |
 | `GEMINI_API_KEY` | Ключ Gemini для AI-объяснений | без него ссылка не показывается |
 | `PUBLIC_HOST` | Публичное имя для Mini App (нужно профилю `server`) | — |
